@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sys
+import threading
 
 import numpy as np
 import pytest
 
 from relin.fit import _resolveWorkerCount, fit
+from relin.models import PolynomialModel
 
 
 def test_resolveWorkerCountExplicitIntIsReturnedAsIs():
@@ -162,3 +164,40 @@ def test_fitInvalidWorkersRaises(smallSyntheticRamp):
         fit([ramp], workers=0)
     with pytest.raises(ValueError, match="workers"):
         fit([ramp], workers=-1)
+
+
+def test_fitWorkerExceptionIncludesTileCoords(smallSyntheticRamp):
+    """If any fitBlock call raises on a worker thread, the exception must
+    be re-raised as a RuntimeError whose message identifies the offending
+    tile's row/col slice and whose __cause__ is the original exception."""
+    ramp, _ = smallSyntheticRamp
+    pm = PolynomialModel(order=2)
+    originalFitBlock = pm.fitBlock
+    failLock = threading.Lock()
+    failedOnce = threading.Event()
+
+    def failingFitBlock(m, t, valid, conditionNumberLimit):
+        # Atomically check-and-set: without the lock, two concurrent workers
+        # could both see is_set() == False and both raise. The lock guarantees
+        # exactly one thread takes the failure branch.
+        with failLock:
+            if not failedOnce.is_set():
+                failedOnce.set()
+                raise RuntimeError("injected failure")
+        return originalFitBlock(
+            m=m, t=t, valid=valid, conditionNumberLimit=conditionNumberLimit
+        )
+
+    # PolynomialModel is a frozen dataclass; bypass the frozen __setattr__
+    # to shadow the bound method with an instance attribute.
+    object.__setattr__(pm, "fitBlock", failingFitBlock)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"fitBlock failed at tile \[rows \d+:\d+, cols \d+:\d+\]",
+    ) as excInfo:
+        fit([ramp], model=pm, blockSize=(2, 3), workers=2)
+    # __cause__ carries the original exception.
+    cause = excInfo.value.__cause__
+    assert isinstance(cause, RuntimeError)
+    assert str(cause) == "injected failure"

@@ -214,7 +214,19 @@ def fit(
 
             for fut in as_completed(futures):
                 rs, re, cs, ce = futures[fut]
-                result = fut.result()
+                try:
+                    result = fut.result()
+                except Exception as e:
+                    # Cancel any futures that haven't started; in-flight
+                    # tasks still run to completion but their results are
+                    # discarded when the `with` block shuts down.
+                    for other in futures:
+                        if other is not fut:
+                            other.cancel()
+                    raise RuntimeError(
+                        f"fitBlock failed at tile "
+                        f"[rows {rs}:{re}, cols {cs}:{ce}]"
+                    ) from e
                 _storeResult(rs, re, cs, ce, result)
 
     # Propagate input masks: any nonzero validMask entry in any ramp sets MASKED_BY_INPUT.
