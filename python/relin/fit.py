@@ -60,8 +60,54 @@ def fit(
 ) -> LinearityCorrection:
     """Fit a per-pixel nonlinearity correction from one or more ramps.
 
-    See ``docs/superpowers/specs/2026-04-16-relin-package-design.md`` for the
-    full algorithm description.
+    See ``docs/superpowers/specs/2026-04-16-relin-package-design.md`` for
+    the full algorithm description.
+
+    Parameters
+    ----------
+    ramps : sequence of Ramp
+        One or more ramps to fit jointly. All ramps must share the same
+        ``(H, W)`` frame shape.
+    model : Model, optional
+        Model to fit. Defaults to ``PolynomialModel(order=4)``.
+    blockSize : (int, int), optional
+        Tile size in pixels for the per-tile normal-equations fit.
+        Default is ``(512, 512)``. Smaller tiles reduce peak memory;
+        larger tiles reduce per-tile overhead.
+    workers : int or None, optional
+        Number of worker threads for the tile loop.
+
+        - ``1`` (explicit): sequential — no thread pool is constructed.
+        - ``N > 1`` (explicit): run the tile loop on a
+          ``ThreadPoolExecutor`` with ``max_workers=N``. No upper cap is
+          applied to explicit values.
+        - ``None`` (default): heuristic. If ``H * W < 1_000_000``, use
+          ``1`` worker (sequential). Otherwise use
+          ``min(os.cpu_count() or 1, 8)``. The cap at 8 applies only
+          to the auto-detected default.
+
+        Output is deterministic and worker-count-independent: every tile
+        writes to a disjoint slice of the preallocated output arrays
+        on the main thread, so the fit result is byte-identical
+        regardless of ``workers``.
+
+        Note on BLAS/LAPACK: numpy's linear-algebra routines may spawn
+        additional internal threads. On multi-core machines, combining
+        ``workers > 1`` with an uncontrolled BLAS thread count can lead
+        to oversubscription and diminishing returns. If threaded
+        speedup plateaus below expectations, try setting
+        ``OMP_NUM_THREADS=1`` and/or ``MKL_NUM_THREADS=1`` in the
+        process environment.
+    conditionNumberLimit : float, optional
+        Pixels whose normal-equations matrix has a condition number
+        above this threshold are flagged as ``FIT_FAILED`` and left
+        with zeroed coefficients. Default ``1e12``.
+
+    Returns
+    -------
+    LinearityCorrection
+        Fitted coefficients, range bounds, bad-pixel mask, and
+        diagnostics.
     """
     if model is None:
         model = PolynomialModel(order=4)
