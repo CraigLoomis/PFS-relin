@@ -34,11 +34,17 @@ def saveFits(path: str | Path, correction: LinearityCorrection) -> None:
         "ISO-8601 fit timestamp",
     )
     primaryHeader["RELINVER"] = (_relinVersion(), "relin package version")
-    # Scalar summary fields (numbers only; skip non-scalar entries).
+    # Scalar summary fields. Long keys become HIERARCH cards (case-preserved);
+    # short keys are uppercased by FITS and the original Python key is stored in
+    # the comment so ``loadFits`` can reconstruct the dict without collisions.
     for key, value in correction.diagnostics.summary.items():
-        fitsKey = _toFitsKey(key)
         if isinstance(value, (int, float, bool, str)):
-            primaryHeader[fitsKey] = (value, key)
+            if len(key) > 8:
+                # HIERARCH card: keyword IS the Python key; no comment needed.
+                primaryHeader["HIERARCH " + key] = (value, "")
+            else:
+                # Short key: FITS uppercases it; store original in comment.
+                primaryHeader[key] = (value, key)
     primary = fits.PrimaryHDU(header=primaryHeader)
 
     # Model-specific HDUs.
@@ -105,16 +111,24 @@ def loadFits(path: str | Path) -> LinearityCorrection:
         conditionNumber = _arrayByName(hdul, "CONDNUM")
 
         # Rebuild summary from primary header (best-effort; drops non-scalar keys).
+        # HIERARCH cards preserve the Python key in card.keyword (mixed case /
+        # underscores); for short keys that FITS uppercased, the original Python
+        # key is stored in the comment.
         summary: dict = {}
+        _skipKeys = {"SIMPLE", "BITPIX", "NAXIS", "EXTEND", "MODEL",
+                     "FITDATE", "RELINVER"}
         for card in primary.header.cards:
             key = card.keyword
-            if key in ("SIMPLE", "BITPIX", "NAXIS", "EXTEND", "MODEL",
-                      "FITDATE", "RELINVER") or key.startswith("NAXIS"):
+            if key in _skipKeys or key.startswith("NAXIS"):
                 continue
-            if card.comment:  # the "key" field stores the original dict key
-                # We store the original key in the comment when saving.
-                originalKey = card.comment
-                summary[originalKey] = card.value
+            if key == key.upper():
+                # Standard FITS key (uppercased); recover original via comment.
+                if card.comment:
+                    originalKey = card.comment
+                    summary[originalKey] = card.value
+            else:
+                # HIERARCH card — keyword IS the original Python key.
+                summary[key] = card.value
 
     diagnostics = Diagnostics(
         residualRms=residualRms,
@@ -139,10 +153,3 @@ def _arrayByName(hdul: fits.HDUList, name: str) -> np.ndarray:
         if getattr(hdu, "name", "") == name:
             return np.asarray(hdu.data)
     raise ValueError(f"HDU {name!r} not found in FITS file")
-
-
-def _toFitsKey(pythonKey: str) -> str:
-    """FITS header keys are <= 8 chars, uppercase, no underscore-leading digits.
-    Truncate and uppercase defensively; collisions are avoided by using the
-    original key as the comment so ``loadFits`` can reconstruct the dict."""
-    return pythonKey.upper()[:8]

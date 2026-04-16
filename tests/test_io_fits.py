@@ -69,6 +69,25 @@ def test_saveFitsImageHdusHaveChecksums(tmp_path):
             assert "DATASUM" in hdu.header
 
 
+def test_saveLoadRoundTripSummary(tmp_path):
+    """All scalar summary keys survive the round-trip, including those
+    longer than 8 characters (which share 8-char prefixes)."""
+    correction = _makeCorrection()
+    path = tmp_path / "correction.fits"
+    saveFits(path, correction)
+    loaded = loadFits(path)
+    # Every scalar entry in the original summary must appear in the loaded
+    # summary with an equal value (floats allowed to round-trip via FITS).
+    for key, value in correction.diagnostics.summary.items():
+        if not isinstance(value, (int, float, bool, str)):
+            continue
+        assert key in loaded.diagnostics.summary, f"missing summary key {key!r}"
+        if isinstance(value, float):
+            assert float(loaded.diagnostics.summary[key]) == pytest.approx(value)
+        else:
+            assert loaded.diagnostics.summary[key] == value
+
+
 def test_loadFitsUnknownModelRaises(tmp_path):
     correction = _makeCorrection()
     path = tmp_path / "correction.fits"
