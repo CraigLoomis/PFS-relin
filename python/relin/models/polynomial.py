@@ -243,7 +243,7 @@ class PolynomialModel:
         """Serialize model coefficients to a single ImageHDU named COEFFS."""
         hdu = fits.ImageHDU(data=correction.coefficients, name="COEFFS")
         hdu.header["ORDER"] = (self.order, "polynomial order")
-        hdu.header["FTHROUGH0"] = (
+        hdu.header["FTHRU0"] = (
             self.forceThroughOrigin,
             "polynomial forced through origin (c0 == 0)",
         )
@@ -261,6 +261,6 @@ class PolynomialModel:
         if coeffsHdu is None:
             raise ValueError("No COEFFS HDU found in provided hdus")
         order = int(coeffsHdu.header["ORDER"])
-        fto = bool(coeffsHdu.header["FTHROUGH0"])
+        fto = bool(coeffsHdu.header["FTHRU0"])
         coefficients = np.asarray(coeffsHdu.data, dtype=np.float32)
         return cls(order=order, forceThroughOrigin=fto), coefficients

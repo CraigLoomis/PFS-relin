@@ -249,9 +249,9 @@ def test_polynomialModelFitsRoundTrip():
     assert hdus[0].name == "COEFFS"
     np.testing.assert_array_equal(hdus[0].data, coeffs)
 
-    # Header must record ORDER and FTHROUGH0.
+    # Header must record ORDER and FTHRU0.
     assert hdus[0].header["ORDER"] == 4
-    assert hdus[0].header["FTHROUGH0"] is False
+    assert hdus[0].header["FTHRU0"] is False
 
     # Round-trip through from_fits_hdus.
     loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
@@ -271,7 +271,7 @@ def test_polynomialModelFitsForceThroughOrigin():
             self.coefficients = c
     hdus = model.toFitsHdus(Stub(coeffs))
 
-    assert hdus[0].header["FTHROUGH0"] is True
+    assert hdus[0].header["FTHRU0"] is True
     loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
     assert loadedModel.order == 3
     assert loadedModel.forceThroughOrigin is True
