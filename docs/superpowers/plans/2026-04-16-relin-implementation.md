@@ -1251,9 +1251,9 @@ def test_polynomialModelFitsRoundTrip():
     assert hdus[0].name == "COEFFS"
     np.testing.assert_array_equal(hdus[0].data, coeffs)
 
-    # Header must record ORDER and FTHROUGH0.
+    # Header must record ORDER and FTHRU0.
     assert hdus[0].header["ORDER"] == 4
-    assert hdus[0].header["FTHROUGH0"] is False
+    assert hdus[0].header["FTHRU0"] is False
 
     # Round-trip through from_fits_hdus.
     loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
@@ -1273,7 +1273,7 @@ def test_polynomialModelFitsForceThroughOrigin():
             self.coefficients = c
     hdus = model.toFitsHdus(Stub(coeffs))
 
-    assert hdus[0].header["FTHROUGH0"] is True
+    assert hdus[0].header["FTHRU0"] is True
     loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
     assert loadedModel.order == 3
     assert loadedModel.forceThroughOrigin is True
@@ -1300,7 +1300,7 @@ from astropy.io import fits
         """Serialize model coefficients to a single ImageHDU named COEFFS."""
         hdu = fits.ImageHDU(data=correction.coefficients, name="COEFFS")
         hdu.header["ORDER"] = (self.order, "polynomial order")
-        hdu.header["FTHROUGH0"] = (
+        hdu.header["FTHRU0"] = (
             self.forceThroughOrigin,
             "polynomial forced through origin (c0 == 0)",
         )
@@ -1318,7 +1318,7 @@ from astropy.io import fits
         if coeffsHdu is None:
             raise ValueError("No COEFFS HDU found in provided hdus")
         order = int(coeffsHdu.header["ORDER"])
-        fto = bool(coeffsHdu.header["FTHROUGH0"])
+        fto = bool(coeffsHdu.header["FTHRU0"])
         coefficients = np.asarray(coeffsHdu.data, dtype=np.float32)
         return cls(order=order, forceThroughOrigin=fto), coefficients
 ```
@@ -2047,6 +2047,25 @@ def test_saveFitsImageHdusHaveChecksums(tmp_path):
             assert "DATASUM" in hdu.header
 
 
+def test_saveLoadRoundTripSummary(tmp_path):
+    """All scalar summary keys survive the round-trip, including those
+    longer than 8 characters (which share 8-char prefixes)."""
+    correction = _makeCorrection()
+    path = tmp_path / "correction.fits"
+    saveFits(path, correction)
+    loaded = loadFits(path)
+    # Every scalar entry in the original summary must appear in the loaded
+    # summary with an equal value (floats allowed to round-trip via FITS).
+    for key, value in correction.diagnostics.summary.items():
+        if not isinstance(value, (int, float, bool, str)):
+            continue
+        assert key in loaded.diagnostics.summary, f"missing summary key {key!r}"
+        if isinstance(value, float):
+            assert float(loaded.diagnostics.summary[key]) == pytest.approx(value)
+        else:
+            assert loaded.diagnostics.summary[key] == value
+
+
 def test_loadFitsUnknownModelRaises(tmp_path):
     correction = _makeCorrection()
     path = tmp_path / "correction.fits"
@@ -2106,11 +2125,18 @@ def saveFits(path: str | Path, correction: LinearityCorrection) -> None:
         "ISO-8601 fit timestamp",
     )
     primaryHeader["RELINVER"] = (_relinVersion(), "relin package version")
-    # Scalar summary fields (numbers only; skip non-scalar entries).
+    # Scalar summary fields. Long keys (>8 chars) use explicit HIERARCH cards
+    # (case-preserved keyword); short keys are uppercased by FITS and the
+    # original Python key is stored in the comment so ``loadFits`` can
+    # reconstruct the dict without collisions.
     for key, value in correction.diagnostics.summary.items():
-        fitsKey = _toFitsKey(key)
         if isinstance(value, (int, float, bool, str)):
-            primaryHeader[fitsKey] = (value, key)
+            if len(key) > 8:
+                # HIERARCH card: keyword IS the Python key; no comment needed.
+                primaryHeader["HIERARCH " + key] = (value, "")
+            else:
+                # Short key: FITS uppercases it; store original in comment.
+                primaryHeader[key] = (value, key)
     primary = fits.PrimaryHDU(header=primaryHeader)
 
     # Model-specific HDUs.
@@ -2177,16 +2203,24 @@ def loadFits(path: str | Path) -> LinearityCorrection:
         conditionNumber = _arrayByName(hdul, "CONDNUM")
 
         # Rebuild summary from primary header (best-effort; drops non-scalar keys).
+        # HIERARCH cards preserve the Python key in card.keyword (mixed case /
+        # underscores); for short keys that FITS uppercased, the original Python
+        # key is stored in the comment.
         summary: dict = {}
+        _skipKeys = {"SIMPLE", "BITPIX", "NAXIS", "EXTEND", "MODEL",
+                     "FITDATE", "RELINVER"}
         for card in primary.header.cards:
             key = card.keyword
-            if key in ("SIMPLE", "BITPIX", "NAXIS", "EXTEND", "MODEL",
-                      "FITDATE", "RELINVER") or key.startswith("NAXIS"):
+            if key in _skipKeys or key.startswith("NAXIS"):
                 continue
-            if card.comment:  # the "key" field stores the original dict key
-                # We store the original key in the comment when saving.
-                originalKey = card.comment
-                summary[originalKey] = card.value
+            if key == key.upper():
+                # Standard FITS key (uppercased); recover original via comment.
+                if card.comment:
+                    originalKey = card.comment
+                    summary[originalKey] = card.value
+            else:
+                # HIERARCH card — keyword IS the original Python key.
+                summary[key] = card.value
 
     diagnostics = Diagnostics(
         residualRms=residualRms,
@@ -2211,13 +2245,6 @@ def _arrayByName(hdul: fits.HDUList, name: str) -> np.ndarray:
         if getattr(hdu, "name", "") == name:
             return np.asarray(hdu.data)
     raise ValueError(f"HDU {name!r} not found in FITS file")
-
-
-def _toFitsKey(pythonKey: str) -> str:
-    """FITS header keys are <= 8 chars, uppercase, no underscore-leading digits.
-    Truncate and uppercase defensively; collisions are avoided by using the
-    original key as the comment so ``loadFits`` can reconstruct the dict."""
-    return pythonKey.upper()[:8]
 ```
 
 ### - [ ] Step 4: Run tests, verify they pass
@@ -2490,10 +2517,17 @@ def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
     # Apply loaded correction to the original ramp.
     result = relin.apply(loaded, ramp)
 
-    # cumulativeLinear should match the true target at every read, up to the
-    # precision of the fit.
+    # The fit infers its own target rate R = median(deltas[0]); for a fixture
+    # whose pixels solve polynomial(m[n]) = rateTrue * (n+1), the fit recovers
+    # a SCALED polynomial so that polynomial_fit(m[n]) = R * (n+1) — i.e. the
+    # correction's output trajectory is R * (n+1), which generally differs
+    # from the fixture's truth["target"] by a small scale factor. Compare
+    # against the fit's self-inferred target grid, not the fixture's truth.
+    fitRate = float(np.median(ramp.deltas[0]))
+    N = ramp.deltas.shape[0]
+    expectedCurve = fitRate * np.arange(1, N + 1, dtype=np.float32)
     expected = np.broadcast_to(
-        truth["target"][:, None, None], ramp.deltas.shape
+        expectedCurve[:, None, None], ramp.deltas.shape
     )
     residual = result.cumulativeLinear - expected
     # Residuals should be small for every pixel.
@@ -2504,13 +2538,15 @@ def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
     assert (loaded.badPixelMask == 0).all()
     assert not result.outOfRangeMask.any()
 
-    # Summary is populated and sane.
+    # Summary is populated and sane. `io.py` preserves summary keys through
+    # the FITS round-trip (HIERARCH cards for >8-char keys, and the original
+    # Python key stashed in the comment for short keys), so we look up the
+    # camelCase keys directly. We still use ``summary.get`` so the assertion
+    # short-circuits cleanly if an upstream change ever renames keys.
     summary = loaded.diagnostics.summary
-    assert summary["MODELNAME"] == "POLYNOMIAL" or \
-           summary.get("modelName") == "POLYNOMIAL"
+    assert summary.get("modelName") == "POLYNOMIAL"
     # Good-pixel fraction is 1.0 for this synthetic dataset.
-    # (Key name is uppercased in the FITS header round-trip.)
-    goodKeys = [k for k in summary if "GOOD" in k.upper() or "good" in k]
+    goodKeys = [k for k in summary if "good" in k.lower()]
     assert goodKeys
     for k in goodKeys:
         assert summary[k] == 1.0 or summary[k] == "1.0"

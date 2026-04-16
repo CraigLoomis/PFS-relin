@@ -245,7 +245,7 @@ FITS is the primary on-disk format. Round-trip invariant: `loadFits(saveFits(x))
 
 | HDU | Name | Type | Shape / contents |
 |-----|------|------|------------------|
-| 0 | `PRIMARY` | header-only | `MODEL` (str, e.g. `POLYNOMIAL`), `ORDER`, `FTHROUGH0` (bool), `NRAMPS`, `FITDATE` (ISO UTC), `RELINVER` (package version), plus scalar summaries from `Diagnostics.summary` |
+| 0 | `PRIMARY` | header-only | `MODEL` (str, e.g. `POLYNOMIAL`), `ORDER`, `FTHRU0` (bool), `NRAMPS`, `FITDATE` (ISO UTC), `RELINVER` (package version), plus scalar summaries from `Diagnostics.summary` |
 | 1 | `COEFFS` | ImageHDU float32 | `(order+1, H, W)` polynomial coefficients, constant term first |
 | 2 | `FITMIN` | ImageHDU float32 | `(H, W)` |
 | 3 | `FITMAX` | ImageHDU float32 | `(H, W)` |
