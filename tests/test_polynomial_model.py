@@ -203,3 +203,28 @@ def test_fitBlockRespectsForceThroughOrigin(tinyLinearRamp):
     np.testing.assert_allclose(
         result.coefficients[1], 1.0 / truth["pixelScale"], rtol=1e-4
     )
+
+
+def test_fitBlockFlagsNonMonotonicFit():
+    """A fit that produces a non-monotonic polynomial on its domain must set
+    NON_MONOTONIC and must not set INSUFFICIENT_POINTS or FIT_FAILED."""
+    from relin.types import NON_MONOTONIC
+    # Construct t vs m such that the best-fit quadratic peaks inside the range:
+    # target is a down-opening parabola in m. m spans [0, 2], t = -m^2 + 2m
+    # (peak at m=1). Use a 2x2 pixel block with identical data everywhere.
+    N, H, W = 13, 2, 2
+    mVec = np.linspace(0.0, 2.0, N, dtype=np.float32)
+    tVec = (-mVec ** 2 + 2.0 * mVec).astype(np.float32)
+    m = np.tile(mVec[:, None, None], (1, H, W))
+    t = tVec
+    valid = np.ones((N, H, W), dtype=bool)
+
+    model = PolynomialModel(order=2)
+    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
+
+    # Every pixel: not skipped, non-monotonic -> NON_MONOTONIC flag set,
+    # no INSUFFICIENT_POINTS, no FIT_FAILED.
+    assert (result.badPixelMask & NON_MONOTONIC).all()
+    assert not (result.badPixelMask & INSUFFICIENT_POINTS).any()
+    assert not (result.badPixelMask & FIT_FAILED).any()
+    assert not result.monotonic.any()

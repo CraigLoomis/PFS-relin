@@ -100,7 +100,7 @@ class PolynomialModel:
     ) -> BlockFitResult:
         """Fit a polynomial at every pixel in the block.
 
-        Uses per-pixel rescaling of ``m`` to the range [0, 1] before forming
+        Uses per-pixel rescaling of ``m`` to the range [-1, 1] before forming
         the normal equations, which keeps the conditioning bounded independent
         of raw DN magnitude. Coefficients are unscaled at the end.
         """
