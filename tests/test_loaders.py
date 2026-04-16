@@ -1,0 +1,26 @@
+"""Tests for loaders.loadNpz."""
+
+from __future__ import annotations
+
+import numpy as np
+
+from relin.loaders import loadNpz
+from relin.types import Ramp
+
+
+def test_loadNpzReturnsRampAndPhotodiode(tmp_path):
+    N, H, W = 5, 3, 4
+    deltas = np.arange(N * H * W, dtype=np.float32).reshape(N, H, W)
+    photodiode = np.array([1.0, 1.1, 1.05, 1.0, 0.95], dtype=np.float64)
+    path = tmp_path / "ramp.npz"
+    np.savez(path, deltas=deltas, photodiode=photodiode)
+
+    ramp, pdio = loadNpz(path)
+    assert isinstance(ramp, Ramp)
+    np.testing.assert_array_equal(ramp.deltas, deltas)
+    assert ramp.validMask is None
+    np.testing.assert_array_equal(pdio, photodiode)
+
+
+def test_saturationModuleIsImportable():
+    import relin.saturation  # noqa: F401
