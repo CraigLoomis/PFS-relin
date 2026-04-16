@@ -350,7 +350,7 @@ Framework: `pytest`. Coverage is not a numeric target; every public function get
 - **Package manager / environment:** `uv`. `pyproject.toml` is authoritative; `uv sync` provisions the dev environment.
 - **Runtime dependencies:** `numpy >= 1.26`, `scipy >= 1.11`, `astropy >= 6.0`.
 - **Dev dependencies:** `pytest`, `pytest-cov`, `ruff` (lint + format; configured to allow camelCase identifier names).
-- **Build backend:** `hatchling`.
+- **Build backend:** `uv_build` (uv's native backend; `[tool.uv.build-backend]` points `module-root = "python"` so the non-standard source location is discovered).
 
 ## 11. Out of scope for MVP
 
