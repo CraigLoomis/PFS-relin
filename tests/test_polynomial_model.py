@@ -90,3 +90,116 @@ def test_isMonotonicDetectsNonMonotonicQuadratic():
     mMax = np.full((H, W), 2.0, dtype=np.float32)  # spans the sign flip
     result = model.isMonotonic(coeffs, mMin, mMax)
     assert not result.any()
+
+
+# ---------------------------------------------------------------------------
+# fitBlock tests
+# ---------------------------------------------------------------------------
+
+from relin.types import (
+    MASKED_BY_INPUT,  # noqa: F401  (used transitively; referenced below)
+    INSUFFICIENT_POINTS,
+    FIT_FAILED,
+)
+
+
+def test_fitBlockRecoversLinearCoefficients(tinyLinearRamp):
+    """With perfectly linear data, recovered coefficients should have c0 ≈ 0
+    and c1 exactly capturing the scaling needed to hit the target rate."""
+    ramp, truth = tinyLinearRamp
+    N, H, W = ramp.deltas.shape
+    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
+    t = truth["target"].astype(np.float32)
+    valid = np.ones((N, H, W), dtype=bool)
+
+    model = PolynomialModel(order=2)
+    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
+
+    assert result.coefficients.shape == (3, H, W)
+    # For pixel (h, w): m[n] = rate * pixelScale[h,w] * (n+1), t[n] = rate * (n+1)
+    # so t = m / pixelScale[h,w]. Expect c0 ≈ 0, c1 ≈ 1/pixelScale, c2 ≈ 0.
+    np.testing.assert_allclose(result.coefficients[0], 0.0, atol=1e-3)
+    np.testing.assert_allclose(
+        result.coefficients[1], 1.0 / truth["pixelScale"], rtol=1e-4
+    )
+    np.testing.assert_allclose(result.coefficients[2], 0.0, atol=1e-6)
+    assert (result.badPixelMask == 0).all()
+    assert (result.nPointsUsed == N).all()
+
+
+def test_fitBlockRecoversPolynomialCoefficients(smallSyntheticRamp):
+    """Fit the known 4th-order synthetic ramp and verify coefficients are recovered."""
+    ramp, truth = smallSyntheticRamp
+    N, H, W = ramp.deltas.shape
+    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
+    t = truth["target"].astype(np.float32)
+    valid = np.ones((N, H, W), dtype=bool)
+
+    model = PolynomialModel(order=4)
+    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
+
+    assert result.coefficients.shape == (5, H, W)
+    # Coefficients should match within a loose tolerance — synthetic data is
+    # constructed exactly but Newton-iteration residuals and float32 arithmetic
+    # limit the recovery precision.
+    np.testing.assert_allclose(result.coefficients[0], truth["c0"], atol=1.0)
+    np.testing.assert_allclose(
+        result.coefficients[1], truth["c1"], rtol=1e-3, atol=1e-3
+    )
+    assert (result.badPixelMask == 0).all()
+    # The residuals should be small: each pixel's target-minus-prediction is
+    # close to zero.
+    assert result.residualRms.max() < 1.0
+
+
+def test_fitBlockFlagsInsufficientPoints():
+    """A pixel with only 3 valid reads cannot fit a 4th-order polynomial
+    (needs >= 6 points)."""
+    N, H, W = 29, 2, 2
+    m = np.tile(np.arange(1, N + 1, dtype=np.float32)[:, None, None], (1, H, W))
+    t = np.arange(1, N + 1, dtype=np.float32)
+    valid = np.ones((N, H, W), dtype=bool)
+    valid[3:, 0, 0] = False  # Pixel (0, 0) has only 3 valid reads
+
+    model = PolynomialModel(order=4)
+    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
+
+    assert result.badPixelMask[0, 0] & INSUFFICIENT_POINTS
+    assert result.badPixelMask[0, 1] == 0
+    assert result.badPixelMask[1, 0] == 0
+    assert result.badPixelMask[1, 1] == 0
+    # Insufficient-points pixel's coefficient row should be zeroed
+    np.testing.assert_array_equal(result.coefficients[:, 0, 0], 0.0)
+
+
+def test_fitBlockFlagsFitFailedWhenIllConditioned():
+    """A pixel where m is constant across all reads yields a singular normal
+    equations matrix and should be flagged FIT_FAILED."""
+    N, H, W = 29, 2, 2
+    m = np.ones((N, H, W), dtype=np.float32) * 100.0  # constant m across reads
+    t = np.arange(1, N + 1, dtype=np.float32)  # varying t
+    valid = np.ones((N, H, W), dtype=bool)
+
+    model = PolynomialModel(order=4)
+    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e10)
+
+    # All pixels degenerate — all flagged FIT_FAILED (or INSUFFICIENT_POINTS
+    # would not apply since nPoints == N). FIT_FAILED set.
+    assert (result.badPixelMask & FIT_FAILED).all()
+
+
+def test_fitBlockRespectsForceThroughOrigin(tinyLinearRamp):
+    """With forceThroughOrigin, c0 must be exactly zero."""
+    ramp, truth = tinyLinearRamp
+    N, H, W = ramp.deltas.shape
+    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
+    t = truth["target"].astype(np.float32)
+    valid = np.ones((N, H, W), dtype=bool)
+
+    model = PolynomialModel(order=2, forceThroughOrigin=True)
+    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
+
+    np.testing.assert_array_equal(result.coefficients[0], 0.0)
+    np.testing.assert_allclose(
+        result.coefficients[1], 1.0 / truth["pixelScale"], rtol=1e-4
+    )

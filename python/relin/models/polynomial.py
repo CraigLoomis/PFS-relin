@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from relin.models.base import BlockFitResult  # noqa: F401  (used in a later task)
+from relin.models.base import BlockFitResult
+from relin.types import FIT_FAILED, INSUFFICIENT_POINTS, NON_MONOTONIC
 
 
 @dataclass(frozen=True)
@@ -89,3 +90,150 @@ class PolynomialModel:
         # Treat degenerate [mMin == mMax] pixels as monotonic.
         degenerate = mMax <= mMin
         return allNonNegative | degenerate
+
+    def fitBlock(
+        self,
+        m: np.ndarray,
+        t: np.ndarray,
+        valid: np.ndarray,
+        conditionNumberLimit: float,
+    ) -> BlockFitResult:
+        """Fit a polynomial at every pixel in the block.
+
+        Uses per-pixel rescaling of ``m`` to the range [0, 1] before forming
+        the normal equations, which keeps the conditioning bounded independent
+        of raw DN magnitude. Coefficients are unscaled at the end.
+        """
+        nPoints, H, W = m.shape
+        p = self.order
+        fto = self.forceThroughOrigin
+        startExp = 1 if fto else 0
+        nCoefs = p + 1 - startExp  # free coefficients
+
+        mD = m.astype(np.float64)
+        v64 = valid.astype(np.float64)
+        t64 = t.astype(np.float64)
+
+        # Count valid points per pixel
+        nPointsUsed = valid.sum(axis=0).astype(np.int32)  # (H, W)
+        badMask = np.zeros((H, W), dtype=np.uint8)
+
+        # fitMin / fitMax: min/max of m over valid reads per pixel
+        mMasked = np.where(valid, mD, np.nan)
+        with np.errstate(invalid="ignore"):
+            fitMin = np.nanmin(mMasked, axis=0)
+            fitMax = np.nanmax(mMasked, axis=0)
+        fitMin = np.where(np.isnan(fitMin), 0.0, fitMin)
+        fitMax = np.where(np.isnan(fitMax), 0.0, fitMax)
+
+        # Per-pixel scaling factor: divide m by max(|m|) so scaled m is in [-1, 1].
+        # This keeps the normal-equation matrix well-conditioned.
+        scale = np.maximum(np.abs(fitMin), np.abs(fitMax))
+        scale = np.where(scale > 0, scale, 1.0)  # avoid /0 for degenerate pixels
+        mScaled = mD / scale[None]  # (N, H, W)
+
+        # Flag insufficient-points pixels now.
+        insufficientPixels = nPointsUsed < (nCoefs + 1)
+        badMask[insufficientPixels] |= INSUFFICIENT_POINTS
+
+        # Accumulate AtA (upper triangular + symmetrize) and Atb in scaled space.
+        AtA = np.zeros((H, W, nCoefs, nCoefs), dtype=np.float64)
+        Atb = np.zeros((H, W, nCoefs), dtype=np.float64)
+
+        # Exponents needed in the fit: startExp .. startExp + nCoefs - 1
+        exps = np.arange(startExp, startExp + nCoefs, dtype=np.int32)
+
+        # For AtA: need mScaled ** (expI + expJ), expI, expJ in exps.
+        # For Atb: need mScaled ** expI with t weighting.
+        # Iterate over exponent sums from 2*startExp to 2*(startExp + nCoefs - 1).
+        for i in range(nCoefs):
+            expI = int(exps[i])
+            # Precompute v * mScaled^expI once per i
+            miPow = mScaled ** expI  # (N, H, W)
+            vMiPow = v64 * miPow
+            # Atb[h, w, i] = Σ_n vMiPow[n, h, w] * t[n]
+            Atb[..., i] = (vMiPow * t64[:, None, None]).sum(axis=0)
+            for j in range(i, nCoefs):
+                expJ = int(exps[j])
+                mSumPow = mScaled ** (expI + expJ)  # (N, H, W)
+                val = (v64 * mSumPow).sum(axis=0)  # (H, W)
+                AtA[..., i, j] = val
+                if i != j:
+                    AtA[..., j, i] = val
+
+        # Condition number BEFORE any modification — captures singular cases.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            conditionNumber = np.linalg.cond(AtA)
+        conditionNumber = np.nan_to_num(conditionNumber, nan=np.inf, posinf=np.inf)
+
+        # Identify ill-conditioned or insufficient pixels; flag FIT_FAILED for
+        # the ill-conditioned set (only among those that have enough points).
+        fitFailed = (~insufficientPixels) & (conditionNumber > conditionNumberLimit)
+        badMask[fitFailed] |= FIT_FAILED
+
+        # For pixels we won't solve, replace AtA with identity so np.linalg.solve
+        # doesn't raise for the whole batch.
+        skip = insufficientPixels | fitFailed  # (H, W)
+        identityBlock = np.eye(nCoefs, dtype=np.float64)
+        AtA[skip] = identityBlock
+        Atb[skip] = 0.0
+
+        # Batched solve.
+        try:
+            solScaled = np.linalg.solve(AtA, Atb[..., None])[..., 0]  # (H, W, nCoefs)
+        except np.linalg.LinAlgError:
+            # Extremely defensive: solve pixel-by-pixel and flag failures.
+            solScaled = np.zeros((H, W, nCoefs), dtype=np.float64)
+            for hi in range(H):
+                for wi in range(W):
+                    if skip[hi, wi]:
+                        continue
+                    try:
+                        solScaled[hi, wi] = np.linalg.solve(
+                            AtA[hi, wi], Atb[hi, wi]
+                        )
+                    except np.linalg.LinAlgError:
+                        badMask[hi, wi] |= FIT_FAILED
+                        solScaled[hi, wi] = 0.0
+            skip = skip | (badMask & FIT_FAILED != 0)
+
+        # Unscale coefficients: in scaled space t = Σ c_scaled[k] (m/scale)^expK.
+        # In original space t = Σ (c_scaled[k] / scale^expK) m^expK.
+        unscaleFactors = scale[..., None] ** exps  # (H, W, nCoefs)
+        solUnscaled = solScaled / unscaleFactors
+
+        # Stitch into (order+1, H, W), filling 0 for the missing c0 when fto.
+        coefficients = np.zeros((p + 1, H, W), dtype=np.float32)
+        for k, e in enumerate(exps):
+            coefficients[int(e)] = solUnscaled[..., k].astype(np.float32)
+        coefficients[:, skip] = 0.0  # Zero out failed/insufficient pixels explicitly
+
+        # Residuals: evaluate fit at each read and compare to t.
+        tPred = self.evaluate(coefficients, m.astype(np.float32))  # (N, H, W)
+        residuals = (t[:, None, None].astype(np.float32) - tPred) * valid
+        nForDiv = np.where(nPointsUsed > 0, nPointsUsed, 1).astype(np.float32)
+        residualRms = np.sqrt((residuals ** 2).sum(axis=0) / nForDiv).astype(np.float32)
+        maxAbsResidual = np.abs(residuals).max(axis=0).astype(np.float32)
+
+        # Monotonicity check (only meaningful for non-skipped pixels, but we
+        # compute it everywhere and overwrite skipped ones below).
+        monotonic = self.isMonotonic(
+            coefficients, fitMin.astype(np.float32), fitMax.astype(np.float32)
+        )
+        # For skipped pixels, monotonicity is undefined — set False without flagging.
+        monotonic[skip] = False
+        # For non-skipped pixels that are non-monotonic, flag NON_MONOTONIC.
+        nonMono = (~skip) & (~monotonic)
+        badMask[nonMono] |= NON_MONOTONIC
+
+        return BlockFitResult(
+            coefficients=coefficients,
+            fitMin=fitMin.astype(np.float32),
+            fitMax=fitMax.astype(np.float32),
+            residualRms=residualRms,
+            maxAbsResidual=maxAbsResidual,
+            nPointsUsed=nPointsUsed,
+            conditionNumber=conditionNumber.astype(np.float32),
+            monotonic=monotonic,
+            badPixelMask=badMask,
+        )
