@@ -1,0 +1,56 @@
+"""End-to-end integration test: fit -> save -> load -> apply."""
+
+from __future__ import annotations
+
+import numpy as np
+
+import relin
+
+
+def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
+    ramp, truth = smallSyntheticRamp
+
+    # Fit with a small block size to exercise the tiling path.
+    correction = relin.fit([ramp], blockSize=(2, 3))
+
+    # Save + load round trip.
+    path = tmp_path / "correction.fits"
+    relin.saveFits(path, correction)
+    loaded = relin.loadFits(path)
+
+    # Apply loaded correction to the original ramp.
+    result = relin.apply(loaded, ramp)
+
+    # The fit infers its own target rate R = median(deltas[0]); for a fixture
+    # whose pixels solve polynomial(m[n]) = rateTrue * (n+1), the fit recovers
+    # a SCALED polynomial so that polynomial_fit(m[n]) = R * (n+1) — i.e. the
+    # correction's output trajectory is R * (n+1), which generally differs
+    # from the fixture's truth["target"] by a small scale factor. Compare
+    # against the fit's self-inferred target grid, not the fixture's truth.
+    fitRate = float(np.median(ramp.deltas[0]))
+    N = ramp.deltas.shape[0]
+    expectedCurve = fitRate * np.arange(1, N + 1, dtype=np.float32)
+    expected = np.broadcast_to(
+        expectedCurve[:, None, None], ramp.deltas.shape
+    )
+    residual = result.cumulativeLinear - expected
+    # Residuals should be small for every pixel.
+    rms = np.sqrt(np.mean(residual ** 2, axis=0))
+    assert rms.max() < 1.0, f"max per-pixel RMS {rms.max()} too large"
+
+    # No bad pixels, no out-of-range flags on the fitting data itself.
+    assert (loaded.badPixelMask == 0).all()
+    assert not result.outOfRangeMask.any()
+
+    # Summary is populated and sane. `io.py` preserves summary keys through
+    # the FITS round-trip (HIERARCH cards for >8-char keys, and the original
+    # Python key stashed in the comment for short keys), so we look up the
+    # camelCase keys directly. We still use ``summary.get`` so the assertion
+    # short-circuits cleanly if an upstream change ever renames keys.
+    summary = loaded.diagnostics.summary
+    assert summary.get("modelName") == "POLYNOMIAL"
+    # Good-pixel fraction is 1.0 for this synthetic dataset.
+    goodKeys = [k for k in summary if "good" in k.lower()]
+    assert goodKeys
+    for k in goodKeys:
+        assert summary[k] == 1.0 or summary[k] == "1.0"
