@@ -8,3 +8,26 @@ def test_packageImports():
 def test_modelsSubpackageImports():
     import relin.models
     assert relin.models is not None
+
+
+def test_publicApiExports():
+    import relin
+
+    for attr in [
+        "Ramp",
+        "LinearizedRamp",
+        "Diagnostics",
+        "LinearityCorrection",
+        "Model",
+        "PolynomialModel",
+        "fit",
+        "apply",
+        "applyFrame",
+        "saveFits",
+        "loadFits",
+        "MASKED_BY_INPUT",
+        "INSUFFICIENT_POINTS",
+        "FIT_FAILED",
+        "NON_MONOTONIC",
+    ]:
+        assert hasattr(relin, attr), f"relin.{attr} missing"
