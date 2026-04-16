@@ -1,0 +1,204 @@
+"""Top-level fit(): tile-iterate over (H, W) and delegate to model.fitBlock."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import numpy as np
+
+from relin.models import Model, PolynomialModel
+from relin.types import (
+    FIT_FAILED,
+    INSUFFICIENT_POINTS,
+    MASKED_BY_INPUT,
+    NON_MONOTONIC,
+    Diagnostics,
+    LinearityCorrection,
+    Ramp,
+)
+
+
+def fit(
+    ramps: Sequence[Ramp],
+    model: Model | None = None,
+    blockSize: tuple[int, int] = (512, 512),
+    conditionNumberLimit: float = 1e12,
+) -> LinearityCorrection:
+    """Fit a per-pixel nonlinearity correction from one or more ramps.
+
+    See ``docs/superpowers/specs/2026-04-16-relin-package-design.md`` for the
+    full algorithm description.
+    """
+    if model is None:
+        model = PolynomialModel(order=4)
+
+    if len(ramps) == 0:
+        raise ValueError("fit() requires at least one ramp")
+
+    # Validate shapes.
+    H, W = ramps[0].deltas.shape[1:]
+    for k, ramp in enumerate(ramps):
+        if ramp.deltas.ndim != 3:
+            raise ValueError(
+                f"ramps[{k}].deltas must be 3-D (N, H, W); got {ramp.deltas.shape}"
+            )
+        if ramp.deltas.shape[1:] != (H, W):
+            raise ValueError(
+                f"ramps[{k}].deltas H,W = {ramp.deltas.shape[1:]} "
+                f"does not match ramps[0] H,W = {(H, W)}"
+            )
+        if ramp.validMask is not None and ramp.validMask.shape != (H, W):
+            raise ValueError(
+                f"ramps[{k}].validMask shape {ramp.validMask.shape} != {(H, W)}"
+            )
+
+    # Per-ramp precomputation.
+    cumulatives: list[np.ndarray] = []
+    targets: list[np.ndarray] = []
+    for ramp in ramps:
+        m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
+        cumulatives.append(m)
+        # Rate R_k: median of first-read deltas over caller-allowed pixels.
+        firstDeltas = ramp.deltas[0].astype(np.float32)
+        if ramp.validMask is not None:
+            allowed = ramp.validMask == 0
+            if allowed.any():
+                rate = float(np.median(firstDeltas[allowed]))
+            else:
+                rate = float(np.median(firstDeltas))
+        else:
+            rate = float(np.median(firstDeltas))
+        Nk = ramp.deltas.shape[0]
+        targets.append(rate * np.arange(1, Nk + 1, dtype=np.float32))
+
+    # Concatenated targets across ramps — used per tile.
+    tConcat = np.concatenate(targets)
+
+    # Preallocate full-frame outputs.
+    # The shape of coefficients is determined by the model:
+    # - PolynomialModel: (order+1, H, W)
+    # We discover the coefficient shape by running a 1x1 dummy block first.
+    coefShape = _peekCoefShape(model)
+    coefficients = np.zeros((coefShape, H, W), dtype=np.float32)
+    fitMin = np.zeros((H, W), dtype=np.float32)
+    fitMax = np.zeros((H, W), dtype=np.float32)
+    residualRms = np.zeros((H, W), dtype=np.float32)
+    maxAbsResidual = np.zeros((H, W), dtype=np.float32)
+    nPointsUsed = np.zeros((H, W), dtype=np.int32)
+    conditionNumber = np.zeros((H, W), dtype=np.float32)
+    monotonic = np.zeros((H, W), dtype=bool)
+    badPixelMask = np.zeros((H, W), dtype=np.uint8)
+
+    # Iterate over tiles.
+    bH, bW = blockSize
+    for rowStart in range(0, H, bH):
+        rowEnd = min(rowStart + bH, H)
+        for colStart in range(0, W, bW):
+            colEnd = min(colStart + bW, W)
+            tileH = rowEnd - rowStart
+            tileW = colEnd - colStart
+
+            # Assemble per-tile m and valid by concatenating ramps.
+            mSegments = []
+            validSegments = []
+            for k, ramp in enumerate(ramps):
+                mSegments.append(
+                    cumulatives[k][:, rowStart:rowEnd, colStart:colEnd]
+                )
+                if ramp.validMask is not None:
+                    vTile = (ramp.validMask[rowStart:rowEnd, colStart:colEnd] == 0)
+                    validSegments.append(
+                        np.broadcast_to(
+                            vTile[None], (ramp.deltas.shape[0], tileH, tileW)
+                        ).copy()
+                    )
+                else:
+                    validSegments.append(
+                        np.ones(
+                            (ramp.deltas.shape[0], tileH, tileW), dtype=bool
+                        )
+                    )
+            mTile = np.concatenate(mSegments, axis=0)
+            validTile = np.concatenate(validSegments, axis=0)
+
+            result = model.fitBlock(
+                m=mTile, t=tConcat, valid=validTile,
+                conditionNumberLimit=conditionNumberLimit,
+            )
+
+            coefficients[:, rowStart:rowEnd, colStart:colEnd] = result.coefficients
+            fitMin[rowStart:rowEnd, colStart:colEnd] = result.fitMin
+            fitMax[rowStart:rowEnd, colStart:colEnd] = result.fitMax
+            residualRms[rowStart:rowEnd, colStart:colEnd] = result.residualRms
+            maxAbsResidual[rowStart:rowEnd, colStart:colEnd] = result.maxAbsResidual
+            nPointsUsed[rowStart:rowEnd, colStart:colEnd] = result.nPointsUsed
+            conditionNumber[rowStart:rowEnd, colStart:colEnd] = result.conditionNumber
+            monotonic[rowStart:rowEnd, colStart:colEnd] = result.monotonic
+            badPixelMask[rowStart:rowEnd, colStart:colEnd] = result.badPixelMask
+
+    # Propagate input masks: any nonzero validMask entry in any ramp sets MASKED_BY_INPUT.
+    for ramp in ramps:
+        if ramp.validMask is not None:
+            inputBad = (ramp.validMask != 0)
+            badPixelMask[inputBad] |= MASKED_BY_INPUT
+
+    # Dataset-wide summary.
+    goodPixels = (badPixelMask == 0)
+    totalPixels = int(H * W)
+    summary: dict = {
+        "totalPixels": totalPixels,
+        "goodPixelFraction": float(goodPixels.sum()) / totalPixels,
+        "badPixelFraction_maskedByInput": float((badPixelMask & MASKED_BY_INPUT > 0).sum()) / totalPixels,
+        "badPixelFraction_insufficientPoints": float((badPixelMask & INSUFFICIENT_POINTS > 0).sum()) / totalPixels,
+        "badPixelFraction_fitFailed": float((badPixelMask & FIT_FAILED > 0).sum()) / totalPixels,
+        "badPixelFraction_nonMonotonic": float((badPixelMask & NON_MONOTONIC > 0).sum()) / totalPixels,
+        "modelName": model.modelName,
+        "nRamps": len(ramps),
+    }
+    if goodPixels.any():
+        goodRms = residualRms[goodPixels]
+        summary["residualRmsP50"] = float(np.percentile(goodRms, 50))
+        summary["residualRmsP95"] = float(np.percentile(goodRms, 95))
+        summary["residualRmsP99"] = float(np.percentile(goodRms, 99))
+    else:
+        summary["residualRmsP50"] = float("nan")
+        summary["residualRmsP95"] = float("nan")
+        summary["residualRmsP99"] = float("nan")
+
+    diagnostics = Diagnostics(
+        residualRms=residualRms,
+        maxAbsResidual=maxAbsResidual,
+        nPointsUsed=nPointsUsed,
+        monotonic=monotonic,
+        conditionNumber=conditionNumber,
+        summary=summary,
+    )
+
+    return LinearityCorrection(
+        model=model,
+        coefficients=coefficients,
+        fitMin=fitMin,
+        fitMax=fitMax,
+        badPixelMask=badPixelMask,
+        diagnostics=diagnostics,
+    )
+
+
+def _peekCoefShape(model: Model) -> int:
+    """Return the first-axis size of coefficients the model will produce.
+
+    For ``PolynomialModel``, this is ``order + 1`` regardless of
+    ``forceThroughOrigin`` (the stored coefficients include a forced c0 = 0).
+    Models that don't expose ``order`` must run a throwaway 1x1 fit.
+    """
+    if isinstance(model, PolynomialModel):
+        return model.order + 1
+    # Fallback: run a minimal 1x1 block fit with 2*(order+1) dummy points.
+    nPoints = 8
+    m = np.linspace(0.0, 1.0, nPoints, dtype=np.float32)[:, None, None]
+    t = m[:, 0, 0].copy()
+    valid = np.ones((nPoints, 1, 1), dtype=bool)
+    result = model.fitBlock(
+        m=m, t=t, valid=valid, conditionNumberLimit=1e12
+    )
+    return int(result.coefficients.shape[0])
