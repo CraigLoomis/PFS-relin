@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 
 import numpy as np
 
@@ -55,6 +55,7 @@ def fit(
     ramps: Sequence[Ramp],
     model: Model | None = None,
     blockSize: tuple[int, int] = (512, 512),
+    workers: int | None = None,
     conditionNumberLimit: float = 1e12,
 ) -> LinearityCorrection:
     """Fit a per-pixel nonlinearity correction from one or more ramps.
@@ -84,6 +85,8 @@ def fit(
             raise ValueError(
                 f"ramps[{k}].validMask shape {ramp.validMask.shape} != {(H, W)}"
             )
+
+    effectiveWorkers = _resolveWorkerCount(workers, H, W)
 
     # Per-ramp precomputation.
     cumulatives: list[np.ndarray] = []
@@ -122,52 +125,97 @@ def fit(
     monotonic = np.zeros((H, W), dtype=bool)
     badPixelMask = np.zeros((H, W), dtype=np.uint8)
 
-    # Iterate over tiles.
+    # Iterate over tiles. Tile-assembly (mTile, validTile) is identical
+    # for sequential and threaded paths; factor it into a closure so both
+    # paths call model.fitBlock with exactly the same inputs.
     bH, bW = blockSize
-    for rowStart in range(0, H, bH):
-        rowEnd = min(rowStart + bH, H)
-        for colStart in range(0, W, bW):
-            colEnd = min(colStart + bW, W)
-            tileH = rowEnd - rowStart
-            tileW = colEnd - colStart
 
-            # Assemble per-tile m and valid by concatenating ramps.
-            mSegments = []
-            validSegments = []
-            for k, ramp in enumerate(ramps):
-                mSegments.append(
-                    cumulatives[k][:, rowStart:rowEnd, colStart:colEnd]
-                )
-                if ramp.validMask is not None:
-                    vTile = (ramp.validMask[rowStart:rowEnd, colStart:colEnd] == 0)
-                    validSegments.append(
-                        np.broadcast_to(
-                            vTile[None], (ramp.deltas.shape[0], tileH, tileW)
-                        ).copy()
-                    )
-                else:
-                    validSegments.append(
-                        np.ones(
-                            (ramp.deltas.shape[0], tileH, tileW), dtype=bool
-                        )
-                    )
-            mTile = np.concatenate(mSegments, axis=0)
-            validTile = np.concatenate(validSegments, axis=0)
-
-            result = model.fitBlock(
-                m=mTile, t=tConcat, valid=validTile,
-                conditionNumberLimit=conditionNumberLimit,
+    def _assembleTile(
+        rowStart: int, rowEnd: int, colStart: int, colEnd: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        tileH = rowEnd - rowStart
+        tileW = colEnd - colStart
+        mSegments: list[np.ndarray] = []
+        validSegments: list[np.ndarray] = []
+        for k, ramp in enumerate(ramps):
+            mSegments.append(
+                cumulatives[k][:, rowStart:rowEnd, colStart:colEnd]
             )
+            if ramp.validMask is not None:
+                vTile = (ramp.validMask[rowStart:rowEnd, colStart:colEnd] == 0)
+                validSegments.append(
+                    np.broadcast_to(
+                        vTile[None], (ramp.deltas.shape[0], tileH, tileW)
+                    ).copy()
+                )
+            else:
+                validSegments.append(
+                    np.ones(
+                        (ramp.deltas.shape[0], tileH, tileW), dtype=bool
+                    )
+                )
+        mTile = np.concatenate(mSegments, axis=0)
+        validTile = np.concatenate(validSegments, axis=0)
+        return mTile, validTile
 
-            coefficients[:, rowStart:rowEnd, colStart:colEnd] = result.coefficients
-            fitMin[rowStart:rowEnd, colStart:colEnd] = result.fitMin
-            fitMax[rowStart:rowEnd, colStart:colEnd] = result.fitMax
-            residualRms[rowStart:rowEnd, colStart:colEnd] = result.residualRms
-            maxAbsResidual[rowStart:rowEnd, colStart:colEnd] = result.maxAbsResidual
-            nPointsUsed[rowStart:rowEnd, colStart:colEnd] = result.nPointsUsed
-            conditionNumber[rowStart:rowEnd, colStart:colEnd] = result.conditionNumber
-            monotonic[rowStart:rowEnd, colStart:colEnd] = result.monotonic
-            badPixelMask[rowStart:rowEnd, colStart:colEnd] = result.badPixelMask
+    def _storeResult(
+        rowStart: int, rowEnd: int, colStart: int, colEnd: int, result
+    ) -> None:
+        coefficients[:, rowStart:rowEnd, colStart:colEnd] = result.coefficients
+        fitMin[rowStart:rowEnd, colStart:colEnd] = result.fitMin
+        fitMax[rowStart:rowEnd, colStart:colEnd] = result.fitMax
+        residualRms[rowStart:rowEnd, colStart:colEnd] = result.residualRms
+        maxAbsResidual[rowStart:rowEnd, colStart:colEnd] = result.maxAbsResidual
+        nPointsUsed[rowStart:rowEnd, colStart:colEnd] = result.nPointsUsed
+        conditionNumber[rowStart:rowEnd, colStart:colEnd] = result.conditionNumber
+        monotonic[rowStart:rowEnd, colStart:colEnd] = result.monotonic
+        badPixelMask[rowStart:rowEnd, colStart:colEnd] = result.badPixelMask
+
+    if effectiveWorkers == 1:
+        # Sequential fast path — no executor involvement.
+        for rowStart in range(0, H, bH):
+            rowEnd = min(rowStart + bH, H)
+            for colStart in range(0, W, bW):
+                colEnd = min(colStart + bW, W)
+                mTile, validTile = _assembleTile(
+                    rowStart, rowEnd, colStart, colEnd
+                )
+                result = model.fitBlock(
+                    m=mTile, t=tConcat, valid=validTile,
+                    conditionNumberLimit=conditionNumberLimit,
+                )
+                _storeResult(rowStart, rowEnd, colStart, colEnd, result)
+    else:
+        # Threaded path. Submit each tile as a future; consume completed
+        # futures on the main thread and stitch into disjoint output slices.
+        # Tile-assembly runs on the submitting thread so workers do pure
+        # compute on independent numpy arrays (no shared mutable state).
+        # Note: ThreadPoolExecutor.submit has no back-pressure, so all
+        # tiles' assembled (mTile, validTile) arrays coexist in memory
+        # until their futures complete. On 4096x4096 with blockSize=(512,
+        # 512), that is 64 tiles of roughly tile-sized float32 plus a
+        # small bool array each — manageable on the reference workload
+        # but worth keeping in mind if tile size grows.
+        with _executorFactory(max_workers=effectiveWorkers) as executor:
+            futures: dict[Future, tuple[int, int, int, int]] = {}
+            for rowStart in range(0, H, bH):
+                rowEnd = min(rowStart + bH, H)
+                for colStart in range(0, W, bW):
+                    colEnd = min(colStart + bW, W)
+                    mTile, validTile = _assembleTile(
+                        rowStart, rowEnd, colStart, colEnd
+                    )
+                    fut = executor.submit(
+                        model.fitBlock,
+                        m=mTile, t=tConcat, valid=validTile,
+                        conditionNumberLimit=conditionNumberLimit,
+                    )
+                    futures[fut] = (rowStart, rowEnd, colStart, colEnd)
+
+            for fut in as_completed(futures):
+                rs, re, cs, ce = futures[fut]
+                result = fut.result()
+                _storeResult(rs, re, cs, ce, result)
 
     # Propagate input masks: any nonzero validMask entry in any ramp sets MASKED_BY_INPUT.
     for ramp in ramps:
