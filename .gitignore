@@ -1,0 +1,28 @@
+# Large example / data files — keep out of git
+examples/**/*.npz
+examples/**/*.fits
+examples/**/*.h5
+
+# uv / venv
+.venv/
+.python-version
+uv.lock
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Claude Code session state
+.claude/
