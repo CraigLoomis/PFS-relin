@@ -228,3 +228,51 @@ def test_fitBlockFlagsNonMonotonicFit():
     assert not (result.badPixelMask & INSUFFICIENT_POINTS).any()
     assert not (result.badPixelMask & FIT_FAILED).any()
     assert not result.monotonic.any()
+
+
+from astropy.io import fits
+
+
+def test_polynomialModelFitsRoundTrip():
+    H, W = 2, 3
+    coeffs = np.arange(5 * H * W, dtype=np.float32).reshape(5, H, W)
+    model = PolynomialModel(order=4, forceThroughOrigin=False)
+
+    # Build a minimal correction-like object with just what to/fromFitsHdus read.
+    class Stub:
+        def __init__(self, c):
+            self.coefficients = c
+    hdus = model.toFitsHdus(Stub(coeffs))
+
+    # Expect exactly one ImageHDU named "COEFFS".
+    assert len(hdus) == 1
+    assert hdus[0].name == "COEFFS"
+    np.testing.assert_array_equal(hdus[0].data, coeffs)
+
+    # Header must record ORDER and FTHROUGH0.
+    assert hdus[0].header["ORDER"] == 4
+    assert hdus[0].header["FTHROUGH0"] is False
+
+    # Round-trip through from_fits_hdus.
+    loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
+    assert loadedModel.order == 4
+    assert loadedModel.forceThroughOrigin is False
+    np.testing.assert_array_equal(loadedCoeffs, coeffs)
+
+
+def test_polynomialModelFitsForceThroughOrigin():
+    H, W = 2, 3
+    coeffs = np.zeros((4, H, W), dtype=np.float32)
+    coeffs[1] = 1.0
+    model = PolynomialModel(order=3, forceThroughOrigin=True)
+
+    class Stub:
+        def __init__(self, c):
+            self.coefficients = c
+    hdus = model.toFitsHdus(Stub(coeffs))
+
+    assert hdus[0].header["FTHROUGH0"] is True
+    loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
+    assert loadedModel.order == 3
+    assert loadedModel.forceThroughOrigin is True
+    np.testing.assert_array_equal(loadedCoeffs, coeffs)

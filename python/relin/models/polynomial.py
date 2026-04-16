@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from astropy.io import fits
 
 from relin.models.base import BlockFitResult
 from relin.types import FIT_FAILED, INSUFFICIENT_POINTS, NON_MONOTONIC
@@ -237,3 +238,29 @@ class PolynomialModel:
             monotonic=monotonic,
             badPixelMask=badMask,
         )
+
+    def toFitsHdus(self, correction) -> list[fits.ImageHDU]:
+        """Serialize model coefficients to a single ImageHDU named COEFFS."""
+        hdu = fits.ImageHDU(data=correction.coefficients, name="COEFFS")
+        hdu.header["ORDER"] = (self.order, "polynomial order")
+        hdu.header["FTHROUGH0"] = (
+            self.forceThroughOrigin,
+            "polynomial forced through origin (c0 == 0)",
+        )
+        hdu.header["COMMENT"] = "COEFFS axis 0 is the coefficient index; C0 first."
+        return [hdu]
+
+    @classmethod
+    def fromFitsHdus(cls, hdus) -> tuple["PolynomialModel", np.ndarray]:
+        """Reconstruct a PolynomialModel + coefficients from HDUs written by toFitsHdus."""
+        coeffsHdu = None
+        for hdu in hdus:
+            if getattr(hdu, "name", "") == "COEFFS":
+                coeffsHdu = hdu
+                break
+        if coeffsHdu is None:
+            raise ValueError("No COEFFS HDU found in provided hdus")
+        order = int(coeffsHdu.header["ORDER"])
+        fto = bool(coeffsHdu.header["FTHROUGH0"])
+        coefficients = np.asarray(coeffsHdu.data, dtype=np.float32)
+        return cls(order=order, forceThroughOrigin=fto), coefficients
