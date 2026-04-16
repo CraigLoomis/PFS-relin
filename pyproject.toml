@@ -1,0 +1,40 @@
+[build-system]
+requires = ["uv_build>=0.5"]
+build-backend = "uv_build"
+
+[project]
+name = "relin"
+version = "0.1.0"
+description = "Per-pixel nonlinearity correction for IR detector ramps"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "astropy>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+]
+
+[tool.uv.build-backend]
+# Our package lives at python/relin/ rather than the default src/relin/.
+module-name = "relin"
+module-root = "python"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+pythonpath = ["python"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+# Keep the default E/F/W/I rules; do NOT enable pep8-naming ("N") rules
+# because this project uses camelCase for functions/variables.
+select = ["E", "F", "W", "I"]
