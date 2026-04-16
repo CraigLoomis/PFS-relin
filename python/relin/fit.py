@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -16,6 +18,37 @@ from relin.types import (
     LinearityCorrection,
     Ramp,
 )
+
+# Worker-count resolution constants. Tunable at module level; the tests
+# monkeypatch `os.cpu_count` rather than these, so changing them does not
+# break tests but will change the default behavior for small/large frames.
+_SMALL_FRAME_PIXEL_LIMIT = 1_000_000   # H*W below this → sequential default
+_DEFAULT_WORKER_CAP = 8                # auto-detected cpu_count is capped here
+
+# Override point for tests. Default is the real ThreadPoolExecutor; a test
+# can `monkeypatch.setattr("relin.fit._executorFactory", ...)` to observe
+# construction or to inject a recording executor.
+_executorFactory = ThreadPoolExecutor
+
+
+def _resolveWorkerCount(workers: int | None, H: int, W: int) -> int:
+    """Resolve the effective worker count for a `fit()` call.
+
+    - If ``workers`` is an ``int``: returned as-is; must be >= 1.
+    - If ``workers`` is ``None``:
+        - H*W < ``_SMALL_FRAME_PIXEL_LIMIT`` → 1 (sequential default).
+        - Otherwise → ``min(os.cpu_count() or 1, _DEFAULT_WORKER_CAP)``.
+
+    Raises:
+        ValueError: if ``workers`` is an int less than 1.
+    """
+    if workers is None:
+        if H * W < _SMALL_FRAME_PIXEL_LIMIT:
+            return 1
+        return min(os.cpu_count() or 1, _DEFAULT_WORKER_CAP)
+    if workers < 1:
+        raise ValueError(f"workers must be >= 1, got {workers}")
+    return workers
 
 
 def fit(
