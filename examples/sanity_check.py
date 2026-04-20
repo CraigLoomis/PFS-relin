@@ -377,6 +377,15 @@ def main() -> None:
     correctedRamp = Ramp(deltas=correctedDeltas, validMask=borderMask)
     t1 = _t("photodiode correction applied", t1)
 
+    # Sample pixel indices from all interior pixels BEFORE fitting, so
+    # the same pixels are plotted regardless of clipping parameters.
+    interior = borderMask == 0
+    rng = np.random.default_rng(args.seed)
+    interiorIdx = np.flatnonzero(interior.ravel())
+    sampleIdx = rng.choice(interiorIdx, size=min(10000, len(interiorIdx)), replace=False)
+    rows = sampleIdx // W
+    cols = sampleIdx % W
+
     from relin.models import PolynomialModel
     model = PolynomialModel(order=args.order)
     print(f"Fitting (blockSize=(512, 512), order={args.order}) ...", flush=True)
@@ -422,9 +431,7 @@ def main() -> None:
     result = relin.apply(loaded, correctedRamp)
     t1 = _t("relin.apply", t1)
 
-    # Linearity check: for each good pixel, cumulativeLinear should be a
-    # straight line in n. Fit a least-squares line per pixel and report the
-    # deviation from linearity (worst and median residual RMS).
+    # Linearity check on the pre-sampled pixels, restricted to good ones.
     good = loaded.badPixelMask == 0
     nGood = int(good.sum())
     print(
@@ -433,17 +440,12 @@ def main() -> None:
         flush=True,
     )
 
-    # Take a random sample of 10000 good pixels to keep memory bounded while
-    # checking linearity. Exclude border pixels.
-    goodInterior = good & (borderMask == 0)
-    nGoodInterior = int(goodInterior.sum())
-    rng = np.random.default_rng(args.seed)
-    idx = np.flatnonzero(goodInterior.ravel())
-    sampleIdx = rng.choice(idx, size=min(10000, nGoodInterior), replace=False)
-    rows = sampleIdx // W
-    cols = sampleIdx % W
+    sampleGood = good[rows, cols]
+    goodRows = rows[sampleGood]
+    goodCols = cols[sampleGood]
+    nGoodSampled = len(goodRows)
 
-    trajectories = result.cumulativeLinear[:, rows, cols]  # (N, K)
+    trajectories = result.cumulativeLinear[:, goodRows, goodCols]  # (N, K)
     n = np.arange(1, trajectories.shape[0] + 1, dtype=np.float64)
 
     # LS line y = a*n: slope a_k = sum(n*y) / sum(n*n)
@@ -451,7 +453,7 @@ def main() -> None:
     residuals = trajectories - slopes[None, :] * n[:, None]
     rms = np.sqrt(np.mean(residuals**2, axis=0))
     print(
-        f"  per-pixel linearity RMS over {len(sampleIdx)} sampled pixels:",
+        f"  per-pixel linearity RMS over {nGoodSampled} sampled good pixels:",
         flush=True,
     )
     print(f"    median={np.median(rms):.4f}  p95={np.percentile(rms, 95):.4f}  max={rms.max():.4f}", flush=True)
