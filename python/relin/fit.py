@@ -59,6 +59,7 @@ def fit(
     conditionNumberLimit: float = 1e12,
     deviationLimit: float | None = None,
     nRefReads: int = 5,
+    saturationLevel: float | None = None,
 ) -> LinearityCorrection:
     """Fit a per-pixel nonlinearity correction from one or more ramps.
 
@@ -116,6 +117,11 @@ def fit(
     nRefReads : int, optional
         Number of early reads to median when computing the per-pixel
         reference rate for ``deviationLimit``. Default ``5``.
+    saturationLevel : float or None, optional
+        When set, reads where the cumulative signal ``m`` exceeds this
+        value are excluded from fitting. For each pixel, the first read
+        exceeding the threshold causes all subsequent reads to be masked.
+        Default ``None`` (disabled).
 
     Returns
     -------
@@ -193,6 +199,12 @@ def fit(
             # Once a read exceeds the limit, mask it and all subsequent reads.
             exceeds = np.maximum.accumulate(exceeds, axis=0)
             v[exceeds] = False
+
+        if saturationLevel is not None:
+            m = cumulatives[k]  # (Nk, H, W)
+            saturated = m > saturationLevel
+            saturated = np.maximum.accumulate(saturated, axis=0)
+            v[saturated] = False
 
         rampValidity.append(v)
 

@@ -43,6 +43,7 @@ def _plotBeforeAfter(
     order: int = 4,
     deviationLimit: float | None = None,
     nRefReads: int = 5,
+    saturationLevel: float | None = None,
 ) -> None:
     """Plot 1: before/after linearization for random good pixels."""
     import matplotlib
@@ -104,9 +105,15 @@ def _plotBeforeAfter(
     axRawDelta.set_title(f"Uncorrected — delta flux ({K} pixels)")
     axLinDelta.set_title(f"Linearized — delta flux ({K} pixels)")
 
-    clipStr = f"deviationLimit={deviationLimit}, nRefReads={nRefReads}" if deviationLimit else "no clipping"
-    fig.suptitle(f"order={order}, {clipStr}", fontsize=11, y=1.01)
-    fig.tight_layout()
+    parts = [f"order={order}"]
+    if deviationLimit is not None:
+        parts.append(f"deviationLimit={deviationLimit}, nRefReads={nRefReads}")
+    if saturationLevel is not None:
+        parts.append(f"saturationLevel={saturationLevel:.0f}")
+    if deviationLimit is None and saturationLevel is None:
+        parts.append("no clipping")
+    fig.suptitle(", ".join(parts), fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(outPath, dpi=150)
     plt.close(fig)
     print(f"  Saved {outPath}", flush=True)
@@ -293,10 +300,12 @@ def main() -> None:
                         help="Generate diagnostic PNGs")
     parser.add_argument("--nplot", type=int, default=1000,
                         help="Number of pixels to plot (default: 1000)")
-    parser.add_argument("--deviation-limit", type=float, default=0.10,
-                        help="Fractional deviation threshold for fit range clipping (default: 0.10)")
-    parser.add_argument("--order", type=int, default=5,
-                        help="Polynomial order (default: 5)")
+    parser.add_argument("--deviation-limit", type=float, default=None,
+                        help="Fractional deviation threshold for fit range clipping (default: None)")
+    parser.add_argument("--order", type=int, default=4,
+                        help="Polynomial order (default: 4)")
+    parser.add_argument("--saturation-level", type=float, default=None,
+                        help="Saturation level in DN (default: None)")
     args = parser.parse_args()
 
     dataPath = Path("examples/linearity/18734/18734_164220.npz")
@@ -335,6 +344,7 @@ def main() -> None:
         [correctedRamp], blockSize=(512, 512),
         model=model,
         deviationLimit=args.deviation_limit,
+        saturationLevel=args.saturation_level,
     )
     t1 = _t("relin.fit", t1)
 
@@ -419,6 +429,13 @@ def main() -> None:
         rawCum = np.cumsum(correctedRamp.deltas.astype(np.float32), axis=0)
         plotDir = fitsPath.parent
 
+        # Build a parameter tag for filenames
+        tag = f"o{args.order}"
+        if args.deviation_limit is not None:
+            tag += f"_dev{args.deviation_limit}"
+        if args.saturation_level is not None:
+            tag += f"_sat{int(args.saturation_level)}"
+
         _plotBeforeAfter(
             rawCum=rawCum,
             linCum=result.cumulativeLinear,
@@ -427,22 +444,23 @@ def main() -> None:
             rows=rows,
             cols=cols,
             rate=float(np.median(correctedRamp.deltas[0])),
-            outPath=plotDir / "diagnostic_before_after.png",
+            outPath=plotDir / f"diagnostic_before_after_{tag}.png",
             nPlot=args.nplot,
             order=args.order,
             deviationLimit=args.deviation_limit,
+            saturationLevel=args.saturation_level,
         )
         _plotRejections(
             rawCum=rawCum,
             badPixelMask=loaded.badPixelMask,
-            outPath=plotDir / "diagnostic_rejections.png",
+            outPath=plotDir / f"diagnostic_rejections_{tag}.png",
             nPlot=args.nplot,
         )
         _plotFitRange(
             fitMin=loaded.fitMin,
             fitMax=loaded.fitMax,
             badPixelMask=loaded.badPixelMask,
-            outPath=plotDir / "diagnostic_fit_range.png",
+            outPath=plotDir / f"diagnostic_fit_range_{tag}.png",
         )
         t1 = _t("plots", t1)
 
