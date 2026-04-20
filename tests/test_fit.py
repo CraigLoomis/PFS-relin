@@ -9,15 +9,22 @@ from relin.models import PolynomialModel
 from relin.types import MASKED_BY_INPUT, Ramp
 
 
-def test_fitSingleRampRecoversCoefficients(smallSyntheticRamp):
+def test_fitSingleRampRecoversTarget(smallSyntheticRamp):
     ramp, truth = smallSyntheticRamp
     correction = fit([ramp])
     assert correction.coefficients.shape == (5, 4, 5)
-    # Leading coefficients should roughly match truth.
-    np.testing.assert_allclose(
-        correction.coefficients[1], truth["c1"], rtol=1e-3, atol=1e-3
-    )
     assert (correction.badPixelMask == 0).all()
+    # Evaluate at the fit points: map m → x, then evaluate.
+    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
+    denom = correction.fitMax - correction.fitMin
+    denom = np.where(denom > 0, denom, 1.0)
+    x = 2.0 * (m - correction.fitMin[None]) / denom[None] - 1.0
+    tPred = correction.model.evaluate(correction.coefficients, x)
+    fitRate = float(np.median(ramp.deltas[0]))
+    N = ramp.deltas.shape[0]
+    expected = fitRate * np.arange(1, N + 1, dtype=np.float32)
+    expectedBroad = np.broadcast_to(expected[:, None, None], tPred.shape)
+    np.testing.assert_allclose(tPred, expectedBroad, rtol=1e-3, atol=1.0)
     # Summary should carry percentiles.
     assert "residualRmsP50" in correction.diagnostics.summary
     assert "residualRmsP95" in correction.diagnostics.summary
@@ -45,7 +52,6 @@ def test_fitPropagatesInputMask(tinyLinearRamp):
 
 def test_fitMultipleRampsConcatenates():
     """Two ramps of different lengths combine per-pixel."""
-    rng = np.random.default_rng(0)
     H, W = 3, 4
     # Pixel-linear: t = m for every pixel.
     # Ramp 1: 8 reads, rate 100.
@@ -58,10 +64,16 @@ def test_fitMultipleRampsConcatenates():
         [Ramp(deltas=deltas1), Ramp(deltas=deltas2)],
         model=PolynomialModel(order=2),
     )
-    # Expected: t = m identically, so c0 ≈ 0, c1 ≈ 1, c2 ≈ 0.
-    np.testing.assert_allclose(correction.coefficients[0], 0.0, atol=1e-3)
-    np.testing.assert_allclose(correction.coefficients[1], 1.0, rtol=1e-4)
-    np.testing.assert_allclose(correction.coefficients[2], 0.0, atol=1e-6)
+    # Verify via evaluation: for ramp1, evaluate at its m values → should match targets.
+    m1 = np.cumsum(deltas1, axis=0)
+    denom = correction.fitMax - correction.fitMin
+    denom = np.where(denom > 0, denom, 1.0)
+    x1 = 2.0 * (m1 - correction.fitMin[None]) / denom[None] - 1.0
+    tPred = correction.model.evaluate(correction.coefficients, x1)
+    # Target for ramp1: rate1 * (n+1)
+    expected1 = rate1 * np.arange(1, 9, dtype=np.float32)
+    expected1Broad = np.broadcast_to(expected1[:, None, None], tPred.shape)
+    np.testing.assert_allclose(tPred, expected1Broad, rtol=1e-4, atol=1e-2)
     # nPointsUsed should be 8 + 12 = 20 everywhere.
     assert (correction.diagnostics.nPointsUsed == 20).all()
 
