@@ -54,60 +54,52 @@ def _plotBeforeAfter(
     N = rawCum.shape[0]
     reads = np.arange(1, N + 1)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10), sharex=True)
+    axRawCum, axLinCum = axes[0, 0], axes[0, 1]
+    axRawDelta, axLinDelta = axes[1, 0], axes[1, 1]
 
-    # --- Top: accumulated flux ---
-    ax1.set_title(f"Accumulated flux — {K} random good pixels")
-    ax1.set_ylabel("Cumulative DN")
-
+    # Precompute all traces for consistent plotting
     for k in range(K):
         r, c = pRows[k], pCols[k]
         mTrace = rawCum[:, r, c]
         tTrace = linCum[:, r, c]
         fMin, fMax = fitMin[r, c], fitMax[r, c]
-
         inRange = (mTrace >= fMin) & (mTrace <= fMax)
-
-        # Plot in-range and out-of-range segments for raw m
-        for seg, color in _segments(reads, mTrace, inRange, "C0", "red"):
-            ax1.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
-        # Same for linearized t
-        for seg, color in _segments(reads, tTrace, inRange, "C1", "red"):
-            ax1.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
-
-    # Reference line
-    ax1.plot(reads, rate * reads, "k--", linewidth=1, label="ideal (rate * n)")
-    ax1.legend(loc="upper left")
-    ax1.set_ylim(0, rate * N * 1.3)
-    ax1.grid(True, alpha=0.3)
-
-    # --- Bottom: delta flux ---
-    ax2.set_title(f"Delta flux (per-read differences) — {K} pixels")
-    ax2.set_ylabel("Delta DN")
-    ax2.set_xlabel("Read number")
-
-    for k in range(K):
-        r, c = pRows[k], pCols[k]
-        mTrace = rawCum[:, r, c]
-        tTrace = linCum[:, r, c]
-        fMin, fMax = fitMin[r, c], fitMax[r, c]
 
         rawDelta = np.diff(mTrace, prepend=0.0)
         rawDelta[0] = mTrace[0]
         linDelta = np.diff(tTrace, prepend=0.0)
         linDelta[0] = tTrace[0]
 
-        inRange = (mTrace >= fMin) & (mTrace <= fMax)
-
+        for seg, color in _segments(reads, mTrace, inRange, "C0", "red"):
+            axRawCum.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+        for seg, color in _segments(reads, tTrace, inRange, "C1", "red"):
+            axLinCum.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
         for seg, color in _segments(reads, rawDelta, inRange, "C0", "red"):
-            ax2.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+            axRawDelta.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
         for seg, color in _segments(reads, linDelta, inRange, "C1", "red"):
-            ax2.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+            axLinDelta.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
 
-    ax2.axhline(rate, color="k", linestyle="--", linewidth=1, label="median rate")
-    ax2.legend(loc="upper right")
-    ax2.set_ylim(-rate * 0.5, rate * 2.0)
-    ax2.grid(True, alpha=0.3)
+    # Reference lines
+    idealCum = rate * reads
+    for ax in (axRawCum, axLinCum):
+        ax.plot(reads, idealCum, "k--", linewidth=1, label="ideal (rate * n)")
+        ax.legend(loc="upper left")
+        ax.set_ylim(0, rate * N * 1.3)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylabel("Cumulative DN")
+    for ax in (axRawDelta, axLinDelta):
+        ax.axhline(rate, color="k", linestyle="--", linewidth=1, label="median rate")
+        ax.legend(loc="upper right")
+        ax.set_ylim(-rate * 0.5, rate * 2.0)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylabel("Delta DN")
+        ax.set_xlabel("Read number")
+
+    axRawCum.set_title(f"Uncorrected — accumulated flux ({K} pixels)")
+    axLinCum.set_title(f"Linearized — accumulated flux ({K} pixels)")
+    axRawDelta.set_title(f"Uncorrected — delta flux ({K} pixels)")
+    axLinDelta.set_title(f"Linearized — delta flux ({K} pixels)")
 
     fig.tight_layout()
     fig.savefig(outPath, dpi=150)
