@@ -40,6 +40,9 @@ def _plotBeforeAfter(
     rate: float,
     outPath: Path,
     nPlot: int = 1000,
+    order: int = 4,
+    deviationLimit: float | None = None,
+    nRefReads: int = 5,
 ) -> None:
     """Plot 1: before/after linearization for random good pixels."""
     import matplotlib
@@ -83,13 +86,13 @@ def _plotBeforeAfter(
     # Reference lines
     idealCum = rate * reads
     for ax in (axRawCum, axLinCum):
-        ax.plot(reads, idealCum, "k--", linewidth=1, label="ideal (rate * n)")
+        ax.plot(reads, idealCum, "k--", linewidth=1, label=f"ideal (rate={rate:.1f} DN/read)")
         ax.legend(loc="upper left")
         ax.set_ylim(0, rate * N * 1.3)
         ax.grid(True, alpha=0.3)
         ax.set_ylabel("Cumulative DN")
     for ax in (axRawDelta, axLinDelta):
-        ax.axhline(rate, color="k", linestyle="--", linewidth=1, label="median rate")
+        ax.axhline(rate, color="k", linestyle="--", linewidth=1, label=f"median rate={rate:.1f} DN/read")
         ax.legend(loc="upper right")
         ax.set_ylim(-rate * 0.5, rate * 2.0)
         ax.grid(True, alpha=0.3)
@@ -101,6 +104,8 @@ def _plotBeforeAfter(
     axRawDelta.set_title(f"Uncorrected — delta flux ({K} pixels)")
     axLinDelta.set_title(f"Linearized — delta flux ({K} pixels)")
 
+    clipStr = f"deviationLimit={deviationLimit}, nRefReads={nRefReads}" if deviationLimit else "no clipping"
+    fig.suptitle(f"order={order}, {clipStr}", fontsize=11, y=1.01)
     fig.tight_layout()
     fig.savefig(outPath, dpi=150)
     plt.close(fig)
@@ -290,6 +295,8 @@ def main() -> None:
                         help="Number of pixels to plot (default: 1000)")
     parser.add_argument("--deviation-limit", type=float, default=0.10,
                         help="Fractional deviation threshold for fit range clipping (default: 0.10)")
+    parser.add_argument("--order", type=int, default=5,
+                        help="Polynomial order (default: 5)")
     args = parser.parse_args()
 
     dataPath = Path("examples/linearity/18734/18734_164220.npz")
@@ -321,9 +328,12 @@ def main() -> None:
     correctedRamp = Ramp(deltas=correctedDeltas)
     t1 = _t("photodiode correction applied", t1)
 
-    print("Fitting (blockSize=(512, 512)) ...", flush=True)
+    from relin.models import PolynomialModel
+    model = PolynomialModel(order=args.order)
+    print(f"Fitting (blockSize=(512, 512), order={args.order}) ...", flush=True)
     correction = relin.fit(
         [correctedRamp], blockSize=(512, 512),
+        model=model,
         deviationLimit=args.deviation_limit,
     )
     t1 = _t("relin.fit", t1)
@@ -419,6 +429,8 @@ def main() -> None:
             rate=float(np.median(correctedRamp.deltas[0])),
             outPath=plotDir / "diagnostic_before_after.png",
             nPlot=args.nplot,
+            order=args.order,
+            deviationLimit=args.deviation_limit,
         )
         _plotRejections(
             rawCum=rawCum,
