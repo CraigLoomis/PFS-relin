@@ -44,13 +44,14 @@ def _plotBeforeAfter(
     deviationLimit: float | None = None,
     nRefReads: int = 5,
     saturationLevel: float | None = None,
+    seed: int = 0,
 ) -> None:
     """Plot 1: before/after linearization for random good pixels."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
     K = min(nPlot, len(rows))
     pick = rng.choice(len(rows), size=K, replace=False)
     pRows, pCols = rows[pick], cols[pick]
@@ -160,6 +161,8 @@ def _plotRejections(
     deviationLimit: float | None = None,
     nRefReads: int = 5,
     saturationLevel: float | None = None,
+    seed: int = 0,
+    borderMask: np.ndarray | None = None,
 ) -> None:
     """Plot 2: rejection bar chart and failed-pixel traces."""
     import matplotlib
@@ -192,14 +195,14 @@ def _plotRejections(
             f"{count:,}\n({pct:.2f}%)", ha="center", va="bottom", fontsize=9,
         )
 
-    # Median good-pixel trace for reference
-    good = badPixelMask == 0
+    # Median good-pixel trace for reference (exclude border)
+    interior = (borderMask == 0) if borderMask is not None else np.ones(badPixelMask.shape, dtype=bool)
+    good = (badPixelMask == 0) & interior
     N = rawCum.shape[0]
     reads = np.arange(1, N + 1)
     if good.any():
         goodIdx = np.flatnonzero(good.ravel())
-        # Sample up to 10000 good pixels for a stable median
-        rngGood = np.random.default_rng(0)
+        rngGood = np.random.default_rng(seed)
         gSample = rngGood.choice(goodIdx, size=min(10000, len(goodIdx)), replace=False)
         gRows, gCols = gSample // W, gSample % W
         medianTrace = np.median(rawCum[:, gRows, gCols], axis=1)
@@ -209,7 +212,7 @@ def _plotRejections(
     # --- Bottom: failed pixel traces ---
     # Exclude MASKED_BY_INPUT (no useful signal)
     failFlags = INSUFFICIENT_POINTS | FIT_FAILED | NON_MONOTONIC
-    failed = (badPixelMask & failFlags) != 0
+    failed = ((badPixelMask & failFlags) != 0) & interior
     failIdx = np.flatnonzero(failed.ravel())
 
     if len(failIdx) == 0:
@@ -217,7 +220,7 @@ def _plotRejections(
                  ha="center", va="center", fontsize=14)
         K = 0
     else:
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(seed)
         K = min(nPlot, len(failIdx))
         pick = rng.choice(len(failIdx), size=K, replace=False)
         sampleIdx = failIdx[pick]
@@ -331,6 +334,8 @@ def main() -> None:
                         help="Polynomial order (default: 4)")
     parser.add_argument("--saturation-level", type=float, default=None,
                         help="Saturation level in DN (default: None)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="RNG seed for pixel sampling (default: 0)")
     args = parser.parse_args()
 
     dataPath = Path("examples/linearity/18734/18734_164220.npz")
@@ -359,7 +364,17 @@ def main() -> None:
         flush=True,
     )
     correctedDeltas = ramp.deltas * scale[:, None, None]
-    correctedRamp = Ramp(deltas=correctedDeltas)
+
+    # Build border mask: nonzero = invalid. The 4-pixel border is a
+    # hardware reference region and must be excluded from fitting.
+    H, W = correctedDeltas.shape[1:]
+    borderMask = np.zeros((H, W), dtype=np.uint8)
+    borderMask[:4, :] = 1
+    borderMask[-4:, :] = 1
+    borderMask[:, :4] = 1
+    borderMask[:, -4:] = 1
+
+    correctedRamp = Ramp(deltas=correctedDeltas, validMask=borderMask)
     t1 = _t("photodiode correction applied", t1)
 
     from relin.models import PolynomialModel
@@ -419,11 +434,12 @@ def main() -> None:
     )
 
     # Take a random sample of 10000 good pixels to keep memory bounded while
-    # checking linearity.
-    rng = np.random.default_rng(0)
-    idx = np.flatnonzero(good.ravel())
-    sampleIdx = rng.choice(idx, size=min(10000, nGood), replace=False)
-    H, W = good.shape
+    # checking linearity. Exclude border pixels.
+    goodInterior = good & (borderMask == 0)
+    nGoodInterior = int(goodInterior.sum())
+    rng = np.random.default_rng(args.seed)
+    idx = np.flatnonzero(goodInterior.ravel())
+    sampleIdx = rng.choice(idx, size=min(10000, nGoodInterior), replace=False)
     rows = sampleIdx // W
     cols = sampleIdx % W
 
@@ -474,6 +490,7 @@ def main() -> None:
             order=args.order,
             deviationLimit=args.deviation_limit,
             saturationLevel=args.saturation_level,
+            seed=args.seed,
         )
         _plotRejections(
             rawCum=rawCum,
@@ -483,6 +500,8 @@ def main() -> None:
             order=args.order,
             deviationLimit=args.deviation_limit,
             saturationLevel=args.saturation_level,
+            seed=args.seed,
+            borderMask=borderMask,
         )
         _plotFitRange(
             fitMin=loaded.fitMin,
