@@ -7,6 +7,7 @@ reloads, applies, and reports residuals.
 
 from __future__ import annotations
 
+import argparse
 import time
 from pathlib import Path
 
@@ -14,7 +15,13 @@ import numpy as np
 
 import relin
 from relin.loaders import loadNpz
-from relin.types import Ramp
+from relin.types import (
+    FIT_FAILED,
+    INSUFFICIENT_POINTS,
+    MASKED_BY_INPUT,
+    NON_MONOTONIC,
+    Ramp,
+)
 
 
 def _t(label: str, t0: float) -> float:
@@ -23,7 +30,214 @@ def _t(label: str, t0: float) -> float:
     return now
 
 
+def _plotBeforeAfter(
+    rawCum: np.ndarray,
+    linCum: np.ndarray,
+    fitMin: np.ndarray,
+    fitMax: np.ndarray,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    rate: float,
+    outPath: Path,
+    nPlot: int = 1000,
+) -> None:
+    """Plot 1: before/after linearization for random good pixels."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    rng = np.random.default_rng(42)
+    K = min(nPlot, len(rows))
+    pick = rng.choice(len(rows), size=K, replace=False)
+    pRows, pCols = rows[pick], cols[pick]
+
+    N = rawCum.shape[0]
+    reads = np.arange(1, N + 1)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+
+    # --- Top: accumulated flux ---
+    ax1.set_title(f"Accumulated flux — {K} random good pixels")
+    ax1.set_ylabel("Cumulative DN")
+
+    for k in range(K):
+        r, c = pRows[k], pCols[k]
+        mTrace = rawCum[:, r, c]
+        tTrace = linCum[:, r, c]
+        fMin, fMax = fitMin[r, c], fitMax[r, c]
+
+        inRange = (mTrace >= fMin) & (mTrace <= fMax)
+
+        # Plot in-range and out-of-range segments for raw m
+        for seg, color in _segments(reads, mTrace, inRange, "C0", "red"):
+            ax1.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+        # Same for linearized t
+        for seg, color in _segments(reads, tTrace, inRange, "C1", "red"):
+            ax1.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+
+    # Reference line
+    ax1.plot(reads, rate * reads, "k--", linewidth=1, label="ideal (rate * n)")
+    ax1.legend(loc="upper left")
+
+    # --- Bottom: delta flux ---
+    ax2.set_title(f"Delta flux (per-read differences) — {K} pixels")
+    ax2.set_ylabel("Delta DN")
+    ax2.set_xlabel("Read number")
+
+    for k in range(K):
+        r, c = pRows[k], pCols[k]
+        mTrace = rawCum[:, r, c]
+        tTrace = linCum[:, r, c]
+        fMin, fMax = fitMin[r, c], fitMax[r, c]
+
+        rawDelta = np.diff(mTrace, prepend=0.0)
+        rawDelta[0] = mTrace[0]
+        linDelta = np.diff(tTrace, prepend=0.0)
+        linDelta[0] = tTrace[0]
+
+        inRange = (mTrace >= fMin) & (mTrace <= fMax)
+
+        for seg, color in _segments(reads, rawDelta, inRange, "C0", "red"):
+            ax2.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+        for seg, color in _segments(reads, linDelta, inRange, "C1", "red"):
+            ax2.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+
+    ax2.axhline(rate, color="k", linestyle="--", linewidth=1, label="median rate")
+    ax2.legend(loc="upper right")
+
+    fig.tight_layout()
+    fig.savefig(outPath, dpi=150)
+    plt.close(fig)
+    print(f"  Saved {outPath}", flush=True)
+
+
+def _segments(
+    x: np.ndarray, y: np.ndarray, inRange: np.ndarray,
+    colorIn: str, colorOut: str,
+) -> list[tuple[tuple[np.ndarray, np.ndarray], str]]:
+    """Split a trace into contiguous in-range and out-of-range segments.
+
+    Returns a list of ((xSeg, ySeg), color) pairs. Adjacent segments share
+    their boundary point so the plotted line has no gaps.
+    """
+    result = []
+    n = len(x)
+    if n == 0:
+        return result
+    i = 0
+    while i < n:
+        cur = bool(inRange[i])
+        j = i + 1
+        while j < n and bool(inRange[j]) == cur:
+            j += 1
+        # Include one extra point at each end to connect segments
+        lo = i
+        hi = min(j, n)  # exclusive
+        if lo > 0:
+            lo -= 1
+        if hi < n:
+            hi += 1
+        color = colorIn if cur else colorOut
+        result.append(((x[lo:hi], y[lo:hi]), color))
+        i = j
+    return result
+
+
+def _plotRejections(
+    rawCum: np.ndarray,
+    badPixelMask: np.ndarray,
+    outPath: Path,
+    nPlot: int = 1000,
+) -> None:
+    """Plot 2: rejection bar chart and failed-pixel traces."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    H, W = badPixelMask.shape
+    totalPixels = H * W
+
+    # --- Top: bar chart ---
+    categories = [
+        ("Good", (badPixelMask == 0).sum()),
+        ("MASKED_BY_INPUT", (badPixelMask & MASKED_BY_INPUT > 0).sum()),
+        ("INSUFFICIENT_POINTS", (badPixelMask & INSUFFICIENT_POINTS > 0).sum()),
+        ("FIT_FAILED", (badPixelMask & FIT_FAILED > 0).sum()),
+        ("NON_MONOTONIC", (badPixelMask & NON_MONOTONIC > 0).sum()),
+    ]
+    labels = [c[0] for c in categories]
+    counts = [int(c[1]) for c in categories]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+
+    bars = ax1.bar(labels, counts, color=["C2", "C7", "C3", "C1", "C0"])
+    ax1.set_ylabel("Pixel count")
+    ax1.set_title("Fit rejection categories (flags are not mutually exclusive)")
+    for bar, count in zip(bars, counts):
+        pct = 100.0 * count / totalPixels
+        ax1.text(
+            bar.get_x() + bar.get_width() / 2, bar.get_height(),
+            f"{count:,}\n({pct:.2f}%)", ha="center", va="bottom", fontsize=9,
+        )
+
+    # --- Bottom: failed pixel traces ---
+    # Exclude MASKED_BY_INPUT (no useful signal)
+    failFlags = INSUFFICIENT_POINTS | FIT_FAILED | NON_MONOTONIC
+    failed = (badPixelMask & failFlags) != 0
+    failIdx = np.flatnonzero(failed.ravel())
+
+    if len(failIdx) == 0:
+        ax2.text(0.5, 0.5, "No failed pixels", transform=ax2.transAxes,
+                 ha="center", va="center", fontsize=14)
+    else:
+        rng = np.random.default_rng(42)
+        K = min(nPlot, len(failIdx))
+        pick = rng.choice(len(failIdx), size=K, replace=False)
+        sampleIdx = failIdx[pick]
+        fRows = sampleIdx // W
+        fCols = sampleIdx % W
+        flags = badPixelMask[fRows, fCols]
+
+        N = rawCum.shape[0]
+        reads = np.arange(1, N + 1)
+
+        flagColors = {
+            FIT_FAILED: ("C1", "FIT_FAILED"),
+            NON_MONOTONIC: ("C0", "NON_MONOTONIC"),
+            INSUFFICIENT_POINTS: ("C3", "INSUFFICIENT_POINTS"),
+        }
+        plotted = set()
+        for k in range(K):
+            trace = rawCum[:, fRows[k], fCols[k]]
+            # Use highest-priority flag for color
+            for flag, (color, label) in flagColors.items():
+                if flags[k] & flag:
+                    lbl = label if label not in plotted else None
+                    ax2.plot(reads, trace, color=color, alpha=0.1,
+                             linewidth=0.5, label=lbl)
+                    plotted.add(label)
+                    break
+
+        ax2.legend(loc="upper left")
+
+    ax2.set_xlabel("Read number")
+    ax2.set_ylabel("Cumulative DN")
+    ax2.set_title(f"Raw cumulative flux for failed pixels (N={K if len(failIdx) > 0 else 0})")
+
+    fig.tight_layout()
+    fig.savefig(outPath, dpi=150)
+    plt.close(fig)
+    print(f"  Saved {outPath}", flush=True)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Sanity check relin on a real ramp")
+    parser.add_argument("--plot", action="store_true",
+                        help="Generate diagnostic PNGs")
+    parser.add_argument("--nplot", type=int, default=1000,
+                        help="Number of pixels to plot (default: 1000)")
+    args = parser.parse_args()
+
     dataPath = Path("examples/linearity/18734/18734_164220.npz")
     fitsPath = Path("examples/linearity/18734/correction.fits")
 
@@ -132,6 +346,30 @@ def main() -> None:
 
     oorFrac = float(result.outOfRangeMask.sum()) / result.outOfRangeMask.size
     print(f"  out-of-range sample fraction: {oorFrac:.4f}", flush=True)
+
+    if args.plot:
+        print("Generating diagnostic plots ...", flush=True)
+        rawCum = np.cumsum(correctedRamp.deltas.astype(np.float32), axis=0)
+        plotDir = fitsPath.parent
+
+        _plotBeforeAfter(
+            rawCum=rawCum,
+            linCum=result.cumulativeLinear,
+            fitMin=loaded.fitMin,
+            fitMax=loaded.fitMax,
+            rows=rows,
+            cols=cols,
+            rate=float(np.median(correctedRamp.deltas[0])),
+            outPath=plotDir / "diagnostic_before_after.png",
+            nPlot=args.nplot,
+        )
+        _plotRejections(
+            rawCum=rawCum,
+            badPixelMask=loaded.badPixelMask,
+            outPath=plotDir / "diagnostic_rejections.png",
+            nPlot=args.nplot,
+        )
+        t1 = _t("plots", t1)
 
     t1 = _t("done", t0)
 
