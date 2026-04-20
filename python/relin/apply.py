@@ -23,7 +23,12 @@ def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
 
     m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)  # (N, H, W)
 
-    t = correction.model.evaluate(correction.coefficients, m)
+    # Map m → x ∈ [-1, 1] for Chebyshev evaluation
+    denom = correction.fitMax - correction.fitMin
+    denom = np.where(denom > 0, denom, 1.0)
+    x = 2.0 * (m - correction.fitMin[None]) / denom[None] - 1.0
+
+    t = correction.model.evaluate(correction.coefficients, x)
     oor = (m < correction.fitMin[None]) | (m > correction.fitMax[None])
 
     # Bad-pixel pass-through: copy input m for any pixel with badPixelMask != 0.
@@ -49,7 +54,12 @@ def applyFrame(
             f"H,W = {correction.coefficients.shape[1:]}"
         )
 
-    t = correction.model.evaluate(correction.coefficients, m)
+    # Map m → x ∈ [-1, 1] for Chebyshev evaluation
+    denom = correction.fitMax - correction.fitMin
+    denom = np.where(denom > 0, denom, 1.0)
+    x = 2.0 * (m - correction.fitMin) / denom - 1.0
+
+    t = correction.model.evaluate(correction.coefficients, x)
     oor = (m < correction.fitMin) | (m > correction.fitMax)
 
     bad = correction.badPixelMask != 0
