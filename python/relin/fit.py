@@ -60,6 +60,7 @@ def fit(
     deviationLimit: float | None = None,
     nRefReads: int = 5,
     saturationLevel: float | None = None,
+    lowFluxFraction: float = 0.5,
 ) -> LinearityCorrection:
     """Fit a per-pixel nonlinearity correction from one or more ramps.
 
@@ -122,6 +123,12 @@ def fit(
         value are excluded from fitting. For each pixel, the first read
         exceeding the threshold causes all subsequent reads to be masked.
         Default ``None`` (disabled).
+    lowFluxFraction : float, optional
+        Pixels whose median delta over the first ``nRefReads`` reads is
+        below ``lowFluxFraction * globalMedianRate`` are masked entirely
+        (all reads invalidated). This rejects dead or very dim pixels
+        that would otherwise pass per-pixel deviation clipping.
+        Default ``0.5``.
 
     Returns
     -------
@@ -186,17 +193,22 @@ def fit(
         else:
             v = np.ones((Nk, H, W), dtype=bool)
 
+        deltas = ramp.deltas.astype(np.float32)  # (Nk, H, W)
+        nRef = min(nRefReads, Nk)
+        refDelta = np.median(deltas[:nRef], axis=0)  # (H, W)
+
+        # Reject low-flux pixels: mask all reads for pixels whose
+        # reference delta is below lowFluxFraction * global median rate.
+        rate = float(targets[k][0])  # targets[k][0] = rate * 1
+        lowFluxThreshold = lowFluxFraction * rate
+        lowFlux = refDelta < lowFluxThreshold  # (H, W)
+        v[:, lowFlux] = False
+
         if deviationLimit is not None:
-            deltas = ramp.deltas.astype(np.float32)  # (Nk, H, W)
-            # Per-pixel reference: median of the first nRefReads deltas.
-            nRef = min(nRefReads, Nk)
-            refDelta = np.median(deltas[:nRef], axis=0)  # (H, W)
-            # Fractional deviation of each read's delta from the reference.
             with np.errstate(divide="ignore", invalid="ignore"):
                 frac = np.abs(deltas - refDelta[None]) / np.abs(refDelta[None])
             frac = np.where(np.isfinite(frac), frac, 0.0)
             exceeds = frac > deviationLimit  # (Nk, H, W)
-            # Once a read exceeds the limit, mask it and all subsequent reads.
             exceeds = np.maximum.accumulate(exceeds, axis=0)
             v[exceeds] = False
 
