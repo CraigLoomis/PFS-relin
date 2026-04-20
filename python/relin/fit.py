@@ -57,6 +57,8 @@ def fit(
     blockSize: tuple[int, int] = (512, 512),
     workers: int | None = None,
     conditionNumberLimit: float = 1e12,
+    deviationLimit: float | None = None,
+    nRefReads: int = 5,
 ) -> LinearityCorrection:
     """Fit a per-pixel nonlinearity correction from one or more ramps.
 
@@ -102,6 +104,18 @@ def fit(
         Pixels whose normal-equations matrix has a condition number
         above this threshold are flagged as ``FIT_FAILED`` and left
         with zeroed coefficients. Default ``1e12``.
+    deviationLimit : float or None, optional
+        When set, reads where the per-read delta deviates from the
+        per-pixel reference rate by more than this fraction are excluded
+        from fitting. The reference rate is the median of the first
+        ``nRefReads`` deltas for each pixel. For each pixel, the first
+        read exceeding the threshold causes all subsequent reads to be
+        masked as well. This clips the fitting range to the linear
+        regime, excluding e.g. the saturated tail. Default ``None``
+        (disabled — all valid reads are used).
+    nRefReads : int, optional
+        Number of early reads to median when computing the per-pixel
+        reference rate for ``deviationLimit``. Default ``5``.
 
     Returns
     -------
@@ -153,6 +167,35 @@ def fit(
         Nk = ramp.deltas.shape[0]
         targets.append(rate * np.arange(1, Nk + 1, dtype=np.float32))
 
+    # Deviation-based clipping: for each ramp, mask reads where the measured
+    # cumulative deviates from the target by more than deviationLimit.
+    # Store per-ramp (Nk, H, W) validity arrays for use in tile assembly.
+    rampValidity: list[np.ndarray] = []
+    for k, ramp in enumerate(ramps):
+        Nk = ramp.deltas.shape[0]
+        if ramp.validMask is not None:
+            v = np.broadcast_to(
+                (ramp.validMask == 0)[None], (Nk, H, W)
+            ).copy()
+        else:
+            v = np.ones((Nk, H, W), dtype=bool)
+
+        if deviationLimit is not None:
+            deltas = ramp.deltas.astype(np.float32)  # (Nk, H, W)
+            # Per-pixel reference: median of the first nRefReads deltas.
+            nRef = min(nRefReads, Nk)
+            refDelta = np.median(deltas[:nRef], axis=0)  # (H, W)
+            # Fractional deviation of each read's delta from the reference.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                frac = np.abs(deltas - refDelta[None]) / np.abs(refDelta[None])
+            frac = np.where(np.isfinite(frac), frac, 0.0)
+            exceeds = frac > deviationLimit  # (Nk, H, W)
+            # Once a read exceeds the limit, mask it and all subsequent reads.
+            exceeds = np.maximum.accumulate(exceeds, axis=0)
+            v[exceeds] = False
+
+        rampValidity.append(v)
+
     # Concatenated targets across ramps — used per tile.
     tConcat = np.concatenate(targets)
 
@@ -179,27 +222,15 @@ def fit(
     def _assembleTile(
         rowStart: int, rowEnd: int, colStart: int, colEnd: int
     ) -> tuple[np.ndarray, np.ndarray]:
-        tileH = rowEnd - rowStart
-        tileW = colEnd - colStart
         mSegments: list[np.ndarray] = []
         validSegments: list[np.ndarray] = []
-        for k, ramp in enumerate(ramps):
+        for k in range(len(ramps)):
             mSegments.append(
                 cumulatives[k][:, rowStart:rowEnd, colStart:colEnd]
             )
-            if ramp.validMask is not None:
-                vTile = (ramp.validMask[rowStart:rowEnd, colStart:colEnd] == 0)
-                validSegments.append(
-                    np.broadcast_to(
-                        vTile[None], (ramp.deltas.shape[0], tileH, tileW)
-                    ).copy()
-                )
-            else:
-                validSegments.append(
-                    np.ones(
-                        (ramp.deltas.shape[0], tileH, tileW), dtype=bool
-                    )
-                )
+            validSegments.append(
+                rampValidity[k][:, rowStart:rowEnd, colStart:colEnd]
+            )
         mTile = np.concatenate(mSegments, axis=0)
         validTile = np.concatenate(validSegments, axis=0)
         return mTile, validTile

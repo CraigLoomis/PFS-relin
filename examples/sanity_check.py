@@ -78,6 +78,8 @@ def _plotBeforeAfter(
     # Reference line
     ax1.plot(reads, rate * reads, "k--", linewidth=1, label="ideal (rate * n)")
     ax1.legend(loc="upper left")
+    ax1.set_ylim(0, rate * N * 1.3)
+    ax1.grid(True, alpha=0.3)
 
     # --- Bottom: delta flux ---
     ax2.set_title(f"Delta flux (per-read differences) — {K} pixels")
@@ -104,6 +106,8 @@ def _plotBeforeAfter(
 
     ax2.axhline(rate, color="k", linestyle="--", linewidth=1, label="median rate")
     ax2.legend(loc="upper right")
+    ax2.set_ylim(-rate * 0.5, rate * 2.0)
+    ax2.grid(True, alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(outPath, dpi=150)
@@ -230,12 +234,70 @@ def _plotRejections(
     print(f"  Saved {outPath}", flush=True)
 
 
+def _plotFitRange(
+    fitMin: np.ndarray,
+    fitMax: np.ndarray,
+    badPixelMask: np.ndarray,
+    outPath: Path,
+) -> None:
+    """Plot 3: distributions of fitMin and fitMax, highlighting failed pixels."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    good = badPixelMask == 0
+    failFlags = INSUFFICIENT_POINTS | FIT_FAILED | NON_MONOTONIC
+    failed = (badPixelMask & failFlags) != 0
+
+    goodMin = fitMin[good].ravel()
+    goodMax = fitMax[good].ravel()
+    failMin = fitMin[failed].ravel()
+    failMax = fitMax[failed].ravel()
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+
+    # --- Top: fitMin distribution ---
+    allMin = fitMin.ravel()
+    lo, hi = np.percentile(allMin[np.isfinite(allMin)], [0.5, 99.5])
+    bins = np.linspace(lo, hi, 200)
+
+    ax1.hist(goodMin, bins=bins, alpha=0.7, color="C0", label="good pixels")
+    if len(failMin) > 0:
+        ax1.hist(failMin, bins=bins, alpha=0.7, color="red", label="failed pixels")
+    ax1.set_xlabel("fitMin (DN)")
+    ax1.set_ylabel("Pixel count")
+    ax1.set_title("Distribution of fitMin (lower bound of fitting range)")
+    ax1.legend()
+    ax1.set_yscale("log")
+
+    # --- Bottom: fitMax distribution ---
+    allMax = fitMax.ravel()
+    lo, hi = np.percentile(allMax[np.isfinite(allMax)], [0.5, 99.5])
+    bins = np.linspace(lo, hi, 200)
+
+    ax2.hist(goodMax, bins=bins, alpha=0.7, color="C0", label="good pixels")
+    if len(failMax) > 0:
+        ax2.hist(failMax, bins=bins, alpha=0.7, color="red", label="failed pixels")
+    ax2.set_xlabel("fitMax (DN)")
+    ax2.set_ylabel("Pixel count")
+    ax2.set_title("Distribution of fitMax (upper bound of fitting range)")
+    ax2.legend()
+    ax2.set_yscale("log")
+
+    fig.tight_layout()
+    fig.savefig(outPath, dpi=150)
+    plt.close(fig)
+    print(f"  Saved {outPath}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sanity check relin on a real ramp")
     parser.add_argument("--plot", action="store_true",
                         help="Generate diagnostic PNGs")
     parser.add_argument("--nplot", type=int, default=1000,
                         help="Number of pixels to plot (default: 1000)")
+    parser.add_argument("--deviation-limit", type=float, default=0.10,
+                        help="Fractional deviation threshold for fit range clipping (default: 0.10)")
     args = parser.parse_args()
 
     dataPath = Path("examples/linearity/18734/18734_164220.npz")
@@ -268,7 +330,10 @@ def main() -> None:
     t1 = _t("photodiode correction applied", t1)
 
     print("Fitting (blockSize=(512, 512)) ...", flush=True)
-    correction = relin.fit([correctedRamp], blockSize=(512, 512))
+    correction = relin.fit(
+        [correctedRamp], blockSize=(512, 512),
+        deviationLimit=args.deviation_limit,
+    )
     t1 = _t("relin.fit", t1)
 
     print("Summary diagnostics:", flush=True)
@@ -368,6 +433,12 @@ def main() -> None:
             badPixelMask=loaded.badPixelMask,
             outPath=plotDir / "diagnostic_rejections.png",
             nPlot=args.nplot,
+        )
+        _plotFitRange(
+            fitMin=loaded.fitMin,
+            fitMax=loaded.fitMax,
+            badPixelMask=loaded.badPixelMask,
+            outPath=plotDir / "diagnostic_fit_range.png",
         )
         t1 = _t("plots", t1)
 
