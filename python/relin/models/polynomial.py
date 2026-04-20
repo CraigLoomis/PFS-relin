@@ -24,30 +24,41 @@ class PolynomialModel:
         if self.order < 1:
             raise ValueError(f"order must be >= 1, got {self.order}")
 
-    def evaluate(self, coefficients: np.ndarray, m: np.ndarray) -> np.ndarray:
-        """Evaluate the per-pixel polynomial via Horner's method.
+    def evaluate(self, coefficients: np.ndarray, x: np.ndarray) -> np.ndarray:
+        """Evaluate the per-pixel Chebyshev series via Clenshaw's algorithm.
 
         Parameters
         ----------
         coefficients
-            Shape ``(order+1, H, W)``, float32. ``coefficients[i]`` is the
-            coefficient of m^i (constant term first).
-        m
-            Shape ``(..., H, W)``, float32. Leading dimensions (e.g. reads) are broadcast.
+            Shape ``(order+1, H, W)``, float32. ``coefficients[k]`` is the
+            coefficient of T_k(x).
+        x
+            Shape ``(..., H, W)``, float32. Mapped input in [-1, 1].
 
         Returns
         -------
         t
-            Same shape as ``m``.
+            Same shape as ``x``.
         """
         coefficients = np.asarray(coefficients)
-        m = np.asarray(m)
+        x = np.asarray(x)
         order = coefficients.shape[0] - 1
-        # Horner: t = ((c_p * m + c_{p-1}) * m + ... + c_1) * m + c_0
-        t = np.full_like(m, coefficients[order], dtype=m.dtype)
-        for i in range(order - 1, -1, -1):
-            t = t * m + coefficients[i]
-        return t
+
+        if order == 0:
+            return np.broadcast_to(coefficients[0], x.shape).astype(x.dtype).copy()
+
+        # Clenshaw recurrence for Chebyshev series:
+        # b_{p+1} = 0, b_p = c_p
+        # b_k = 2*x*b_{k+1} - b_{k+2} + c_k   for k = p-1, ..., 1
+        # result = x*b_1 - b_2 + c_0
+        bNext = np.zeros_like(x, dtype=x.dtype)           # b_{k+2}
+        bCurr = np.full_like(x, coefficients[order], dtype=x.dtype)  # b_{k+1}
+        for k in range(order - 1, 0, -1):
+            bPrev = 2.0 * x * bCurr - bNext + coefficients[k]
+            bNext = bCurr
+            bCurr = bPrev
+        # Final: result = x * b_1 - b_2 + c_0
+        return x * bCurr - bNext + coefficients[0]
 
     def isMonotonic(
         self,

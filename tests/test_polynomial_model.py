@@ -29,40 +29,52 @@ def test_rejectsZeroOrder():
         PolynomialModel(order=0)
 
 
-def test_evaluateIdentity():
-    """t = m (c0=0, c1=1, rest 0) should return m unchanged."""
+def test_evaluateChebyshevIdentity():
+    """t = T_1(x) = x. With coeffs c0=0, c1=1, rest=0, evaluate(x) = x."""
     model = PolynomialModel(order=4)
     H, W, N = 4, 5, 6
     coeffs = np.zeros((5, H, W), dtype=np.float32)
-    coeffs[1] = 1.0  # c1 = 1 everywhere
-    m = np.linspace(0, 10, N * H * W, dtype=np.float32).reshape(N, H, W)
-    t = model.evaluate(coeffs, m)
-    np.testing.assert_allclose(t, m, rtol=1e-6)
+    coeffs[1] = 1.0  # c1 = 1 → T_1(x) = x
+    x = np.linspace(-1, 1, N * H * W, dtype=np.float32).reshape(N, H, W)
+    t = model.evaluate(coeffs, x)
+    np.testing.assert_allclose(t, x, rtol=1e-6)
 
 
-def test_evaluateKnownPolynomial():
-    """t = 2 + 3m + 0.5 m^2, pixel-constant coefficients."""
+def test_evaluateChebyshevConstant():
+    """t = 3*T_0(x) = 3. Constant everywhere."""
     model = PolynomialModel(order=2)
     H, W, N = 2, 3, 5
+    coeffs = np.zeros((3, H, W), dtype=np.float32)
+    coeffs[0] = 3.0
+    x = np.linspace(-1, 1, N * H * W, dtype=np.float32).reshape(N, H, W)
+    t = model.evaluate(coeffs, x)
+    np.testing.assert_allclose(t, 3.0, atol=1e-6)
+
+
+def test_evaluateChebyshevKnownSeries():
+    """t = 2*T_0(x) + 3*T_1(x) + 0.5*T_2(x).
+    T_0=1, T_1=x, T_2=2x^2-1. So t = 2 + 3x + 0.5(2x^2-1) = 1.5 + 3x + x^2."""
+    model = PolynomialModel(order=2)
+    H, W, N = 2, 3, 10
     coeffs = np.zeros((3, H, W), dtype=np.float32)
     coeffs[0] = 2.0
     coeffs[1] = 3.0
     coeffs[2] = 0.5
-    m = np.tile(np.linspace(0, 4, N, dtype=np.float32)[:, None, None], (1, H, W))
-    t = model.evaluate(coeffs, m)
-    expected = 2.0 + 3.0 * m + 0.5 * m ** 2
+    x = np.tile(np.linspace(-1, 1, N, dtype=np.float32)[:, None, None], (1, H, W))
+    t = model.evaluate(coeffs, x)
+    expected = 1.5 + 3.0 * x + x ** 2
     np.testing.assert_allclose(t, expected, rtol=1e-5)
 
 
-def test_evaluateSingleFrameShape():
-    """evaluate must also accept (H, W) input."""
+def test_evaluateChebyshevSingleFrameShape():
+    """evaluate must accept (H, W) input."""
     model = PolynomialModel(order=2)
     H, W = 2, 3
     coeffs = np.zeros((3, H, W), dtype=np.float32)
     coeffs[1] = 1.0
-    m = np.arange(H * W, dtype=np.float32).reshape(H, W)
-    t = model.evaluate(coeffs, m)
-    np.testing.assert_allclose(t, m, rtol=1e-6)
+    x = np.linspace(-1, 1, H * W, dtype=np.float32).reshape(H, W)
+    t = model.evaluate(coeffs, x)
+    np.testing.assert_allclose(t, x, rtol=1e-6)
 
 
 def test_isMonotonicOnLinearCoefficients():
