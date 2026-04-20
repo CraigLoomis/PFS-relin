@@ -128,11 +128,10 @@ class PolynomialModel:
         valid: np.ndarray,
         conditionNumberLimit: float,
     ) -> BlockFitResult:
-        """Fit a polynomial at every pixel in the block.
+        """Fit a Chebyshev polynomial at every pixel in the block.
 
-        Uses per-pixel rescaling of ``m`` to the range [-1, 1] before forming
-        the normal equations, which keeps the conditioning bounded independent
-        of raw DN magnitude. Coefficients are unscaled at the end.
+        Maps ``m`` to ``x ∈ [-1, 1]`` via ``x = 2*(m - fitMin)/(fitMax - fitMin) - 1``
+        before forming normal equations in the Chebyshev basis ``T_k(x)``.
         """
         nPoints, H, W = m.shape
         p = self.order
@@ -154,102 +153,87 @@ class PolynomialModel:
         fitMin = np.where(np.isnan(fitMin), 0.0, fitMin)
         fitMax = np.where(np.isnan(fitMax), 0.0, fitMax)
 
-        # Per-pixel scaling factor: divide m by max(|m|) so scaled m is in [-1, 1].
-        # This keeps the normal-equation matrix well-conditioned.
-        scale = np.maximum(np.abs(fitMin), np.abs(fitMax))
-        scale = np.where(scale > 0, scale, 1.0)  # avoid /0 for degenerate pixels
-        mScaled = mD / scale[None]  # (N, H, W)
+        # Affine map m → x ∈ [-1, 1]: x = 2*(m - fitMin)/(fitMax - fitMin) - 1
+        denom = fitMax - fitMin
+        denom = np.where(denom > 0, denom, 1.0)  # avoid /0 for degenerate pixels
+        x = 2.0 * (mD - fitMin[None]) / denom[None] - 1.0  # (N, H, W)
 
         # Flag insufficient-points pixels now.
         insufficientPixels = nPointsUsed < (nCoefs + 1)
         badMask[insufficientPixels] |= INSUFFICIENT_POINTS
 
-        # Accumulate AtA (upper triangular + symmetrize) and Atb in scaled space.
+        # Compute Chebyshev basis values T_k(x) via three-term recurrence.
+        # nCoefs is small (typically 5), so storing all of them is fine.
+        tCheb = []
+        for k in range(nCoefs):
+            if k == 0:
+                tk = np.ones_like(x)
+            elif k == 1:
+                tk = x.copy()
+            else:
+                tk = 2.0 * x * tCheb[k - 1] - tCheb[k - 2]
+            tCheb.append(tk)
+
+        # Accumulate normal equations AtA and Atb
         AtA = np.zeros((H, W, nCoefs, nCoefs), dtype=np.float64)
         Atb = np.zeros((H, W, nCoefs), dtype=np.float64)
 
-        # Exponents needed in the fit: 0 .. nCoefs - 1
-        exps = np.arange(0, nCoefs, dtype=np.int32)
-
-        # For AtA: need mScaled ** (expI + expJ), expI, expJ in exps.
-        # For Atb: need mScaled ** expI with t weighting.
-        # Iterate over exponent sums from 0 to 2*(nCoefs - 1).
         for i in range(nCoefs):
-            expI = int(exps[i])
-            # Precompute v * mScaled^expI once per i
-            miPow = mScaled ** expI  # (N, H, W)
-            vMiPow = v64 * miPow
-            # Atb[h, w, i] = Σ_n vMiPow[n, h, w] * t[n]
-            Atb[..., i] = (vMiPow * t64[:, None, None]).sum(axis=0)
+            vTi = v64 * tCheb[i]  # (N, H, W)
+            Atb[..., i] = (vTi * t64[:, None, None]).sum(axis=0)
             for j in range(i, nCoefs):
-                expJ = int(exps[j])
-                mSumPow = mScaled ** (expI + expJ)  # (N, H, W)
-                val = (v64 * mSumPow).sum(axis=0)  # (H, W)
+                val = (vTi * tCheb[j]).sum(axis=0)  # (H, W)
                 AtA[..., i, j] = val
                 if i != j:
                     AtA[..., j, i] = val
 
-        # Condition number BEFORE any modification — captures singular cases.
+        # Condition number check
         with np.errstate(divide="ignore", invalid="ignore"):
             conditionNumber = np.linalg.cond(AtA)
         conditionNumber = np.nan_to_num(conditionNumber, nan=np.inf, posinf=np.inf)
 
-        # Identify ill-conditioned or insufficient pixels; flag FIT_FAILED for
-        # the ill-conditioned set (only among those that have enough points).
         fitFailed = (~insufficientPixels) & (conditionNumber > conditionNumberLimit)
         badMask[fitFailed] |= FIT_FAILED
 
-        # For pixels we won't solve, replace AtA with identity so np.linalg.solve
-        # doesn't raise for the whole batch.
-        skip = insufficientPixels | fitFailed  # (H, W)
+        skip = insufficientPixels | fitFailed
         identityBlock = np.eye(nCoefs, dtype=np.float64)
         AtA[skip] = identityBlock
         Atb[skip] = 0.0
 
-        # Batched solve.
+        # Batched solve
         try:
-            solScaled = np.linalg.solve(AtA, Atb[..., None])[..., 0]  # (H, W, nCoefs)
+            sol = np.linalg.solve(AtA, Atb[..., None])[..., 0]  # (H, W, nCoefs)
         except np.linalg.LinAlgError:
-            # Extremely defensive: solve pixel-by-pixel and flag failures.
-            solScaled = np.zeros((H, W, nCoefs), dtype=np.float64)
+            sol = np.zeros((H, W, nCoefs), dtype=np.float64)
             for hi in range(H):
                 for wi in range(W):
                     if skip[hi, wi]:
                         continue
                     try:
-                        solScaled[hi, wi] = np.linalg.solve(
-                            AtA[hi, wi], Atb[hi, wi]
-                        )
+                        sol[hi, wi] = np.linalg.solve(AtA[hi, wi], Atb[hi, wi])
                     except np.linalg.LinAlgError:
                         badMask[hi, wi] |= FIT_FAILED
-                        solScaled[hi, wi] = 0.0
+                        sol[hi, wi] = 0.0
             skip = skip | (badMask & FIT_FAILED != 0)
 
-        # Unscale coefficients: in scaled space t = Σ c_scaled[k] (m/scale)^expK.
-        # In original space t = Σ (c_scaled[k] / scale^expK) m^expK.
-        unscaleFactors = scale[..., None] ** exps  # (H, W, nCoefs)
-        solUnscaled = solScaled / unscaleFactors
-
+        # No unscaling needed — coefficients are in Chebyshev basis directly.
         coefficients = np.zeros((p + 1, H, W), dtype=np.float32)
         for k in range(nCoefs):
-            coefficients[k] = solUnscaled[..., k].astype(np.float32)
+            coefficients[k] = sol[..., k].astype(np.float32)
         coefficients[:, skip] = 0.0
 
         # Residuals: evaluate fit at each read and compare to t.
-        tPred = self.evaluate(coefficients, m.astype(np.float32))  # (N, H, W)
+        tPred = self.evaluate(coefficients, x.astype(np.float32))  # (N, H, W)
         residuals = (t[:, None, None].astype(np.float32) - tPred) * valid
         nForDiv = np.where(nPointsUsed > 0, nPointsUsed, 1).astype(np.float32)
         residualRms = np.sqrt((residuals ** 2).sum(axis=0) / nForDiv).astype(np.float32)
         maxAbsResidual = np.abs(residuals).max(axis=0).astype(np.float32)
 
-        # Monotonicity check (only meaningful for non-skipped pixels, but we
-        # compute it everywhere and overwrite skipped ones below).
+        # Monotonicity check
         monotonic = self.isMonotonic(
             coefficients, fitMin.astype(np.float32), fitMax.astype(np.float32)
         )
-        # For skipped pixels, monotonicity is undefined — set False without flagging.
         monotonic[skip] = False
-        # For non-skipped pixels that are non-monotonic, flag NON_MONOTONIC.
         nonMono = (~skip) & (~monotonic)
         badMask[nonMono] |= NON_MONOTONIC
 

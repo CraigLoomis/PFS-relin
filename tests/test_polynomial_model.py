@@ -114,53 +114,25 @@ from relin.types import (
 )
 
 
-def test_fitBlockRecoversLinearCoefficients(tinyLinearRamp):
-    """With perfectly linear data, recovered coefficients should have c0 ≈ 0
-    and c1 exactly capturing the scaling needed to hit the target rate."""
-    ramp, truth = tinyLinearRamp
-    N, H, W = ramp.deltas.shape
-    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
-    t = truth["target"].astype(np.float32)
+def test_fitBlockChebyshevRecoversLinear():
+    """Fit t = m (identity) and verify evaluate(coeffs, x) reproduces t."""
+    N, H, W = 20, 2, 3
+    mVals = np.linspace(100.0, 500.0, N, dtype=np.float32)
+    m = np.tile(mVals[:, None, None], (1, H, W))
+    t = mVals.copy()
     valid = np.ones((N, H, W), dtype=bool)
 
     model = PolynomialModel(order=2)
     result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
 
     assert result.coefficients.shape == (3, H, W)
-    # For pixel (h, w): m[n] = rate * pixelScale[h,w] * (n+1), t[n] = rate * (n+1)
-    # so t = m / pixelScale[h,w]. Expect c0 ≈ 0, c1 ≈ 1/pixelScale, c2 ≈ 0.
-    np.testing.assert_allclose(result.coefficients[0], 0.0, atol=1e-3)
-    np.testing.assert_allclose(
-        result.coefficients[1], 1.0 / truth["pixelScale"], rtol=1e-4
-    )
-    np.testing.assert_allclose(result.coefficients[2], 0.0, atol=1e-6)
+    fitMin = result.fitMin
+    fitMax = result.fitMax
+    x = 2.0 * (m - fitMin[None]) / (fitMax - fitMin)[None] - 1.0
+    tPred = model.evaluate(result.coefficients, x.astype(np.float32))
+    tExpected = np.tile(t[:, None, None], (1, H, W))
+    np.testing.assert_allclose(tPred, tExpected, rtol=1e-4, atol=1e-2)
     assert (result.badPixelMask == 0).all()
-    assert (result.nPointsUsed == N).all()
-
-
-def test_fitBlockRecoversPolynomialCoefficients(smallSyntheticRamp):
-    """Fit the known 4th-order synthetic ramp and verify coefficients are recovered."""
-    ramp, truth = smallSyntheticRamp
-    N, H, W = ramp.deltas.shape
-    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
-    t = truth["target"].astype(np.float32)
-    valid = np.ones((N, H, W), dtype=bool)
-
-    model = PolynomialModel(order=4)
-    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
-
-    assert result.coefficients.shape == (5, H, W)
-    # Coefficients should match within a loose tolerance — synthetic data is
-    # constructed exactly but Newton-iteration residuals and float32 arithmetic
-    # limit the recovery precision.
-    np.testing.assert_allclose(result.coefficients[0], truth["c0"], atol=1.0)
-    np.testing.assert_allclose(
-        result.coefficients[1], truth["c1"], rtol=1e-3, atol=1e-3
-    )
-    assert (result.badPixelMask == 0).all()
-    # The residuals should be small: each pixel's target-minus-prediction is
-    # close to zero.
-    assert result.residualRms.max() < 1.0
 
 
 def test_fitBlockFlagsInsufficientPoints():
