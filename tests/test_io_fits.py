@@ -98,3 +98,17 @@ def test_loadFitsUnknownModelRaises(tmp_path):
         hdul.flush()
     with pytest.raises(ValueError):
         loadFits(path)
+
+
+def test_loadFitsRejectsOldPolynomialModel(tmp_path):
+    """FITS files with MODEL='POLYNOMIAL' from before the Chebyshev switch
+    must produce a clear error."""
+    correction = _makeCorrection()
+    path = tmp_path / "correction.fits"
+    saveFits(path, correction)
+    # Overwrite MODEL to simulate an old-format file
+    with fits.open(path, mode="update") as hdul:
+        hdul[0].header["MODEL"] = "POLYNOMIAL"
+        hdul.flush()
+    with pytest.raises(ValueError, match="Unknown model"):
+        loadFits(path)

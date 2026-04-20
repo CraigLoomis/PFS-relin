@@ -326,8 +326,7 @@ def fit(
 def _peekCoefShape(model: Model) -> int:
     """Return the first-axis size of coefficients the model will produce.
 
-    For ``PolynomialModel``, this is ``order + 1`` regardless of
-    ``forceThroughOrigin`` (the stored coefficients include a forced c0 = 0).
+    For ``PolynomialModel``, this is ``order + 1``.
     Models that don't expose ``order`` must run a throwaway 1x1 fit.
     """
     if isinstance(model, PolynomialModel):

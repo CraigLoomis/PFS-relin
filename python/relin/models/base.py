@@ -28,7 +28,7 @@ class BlockFitResult:
 class Model(Protocol):
     """Protocol implemented by every concrete fit form (polynomial, spline, ...)."""
 
-    modelName: str  # e.g. "POLYNOMIAL"; written into the FITS PRIMARY header
+    modelName: str  # e.g. "CHEBYSHEV"; written into the FITS PRIMARY header
 
     def fitBlock(
         self,
