@@ -45,7 +45,7 @@ def test_saveLoadRoundTrip(tmp_path):
     np.testing.assert_array_equal(
         loaded.diagnostics.conditionNumber, correction.diagnostics.conditionNumber
     )
-    assert loaded.model.modelName == "POLYNOMIAL"
+    assert loaded.model.modelName == "CHEBYSHEV"
     assert loaded.model.order == 2
 
 
@@ -55,7 +55,7 @@ def test_saveFitsPrimaryIsHeaderOnly(tmp_path):
     saveFits(path, correction)
     with fits.open(path) as hdul:
         assert hdul[0].data is None
-        assert hdul[0].header["MODEL"] == "POLYNOMIAL"
+        assert hdul[0].header["MODEL"] == "CHEBYSHEV"
         assert "RELINVER" in hdul[0].header
 
 

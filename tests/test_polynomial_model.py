@@ -11,8 +11,7 @@ from relin.models.polynomial import PolynomialModel
 def test_defaultConstructor():
     m = PolynomialModel()
     assert m.order == 4
-    assert m.forceThroughOrigin is False
-    assert m.modelName == "POLYNOMIAL"
+    assert m.modelName == "CHEBYSHEV"
 
 
 def test_customOrder():
@@ -188,23 +187,6 @@ def test_fitBlockFlagsFitFailedWhenIllConditioned():
     assert (result.badPixelMask & FIT_FAILED).all()
 
 
-def test_fitBlockRespectsForceThroughOrigin(tinyLinearRamp):
-    """With forceThroughOrigin, c0 must be exactly zero."""
-    ramp, truth = tinyLinearRamp
-    N, H, W = ramp.deltas.shape
-    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
-    t = truth["target"].astype(np.float32)
-    valid = np.ones((N, H, W), dtype=bool)
-
-    model = PolynomialModel(order=2, forceThroughOrigin=True)
-    result = model.fitBlock(m=m, t=t, valid=valid, conditionNumberLimit=1e12)
-
-    np.testing.assert_array_equal(result.coefficients[0], 0.0)
-    np.testing.assert_allclose(
-        result.coefficients[1], 1.0 / truth["pixelScale"], rtol=1e-4
-    )
-
-
 def test_fitBlockFlagsNonMonotonicFit():
     """A fit that produces a non-monotonic polynomial on its domain must set
     NON_MONOTONIC and must not set INSUFFICIENT_POINTS or FIT_FAILED."""
@@ -236,7 +218,7 @@ from astropy.io import fits
 def test_polynomialModelFitsRoundTrip():
     H, W = 2, 3
     coeffs = np.arange(5 * H * W, dtype=np.float32).reshape(5, H, W)
-    model = PolynomialModel(order=4, forceThroughOrigin=False)
+    model = PolynomialModel(order=4)
 
     # Build a minimal correction-like object with just what to/fromFitsHdus read.
     class Stub:
@@ -249,30 +231,12 @@ def test_polynomialModelFitsRoundTrip():
     assert hdus[0].name == "COEFFS"
     np.testing.assert_array_equal(hdus[0].data, coeffs)
 
-    # Header must record ORDER and FTHRU0.
+    # Header must record ORDER.
     assert hdus[0].header["ORDER"] == 4
-    assert hdus[0].header["FTHRU0"] is False
 
-    # Round-trip through from_fits_hdus.
+    # Round-trip through fromFitsHdus.
     loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
     assert loadedModel.order == 4
-    assert loadedModel.forceThroughOrigin is False
     np.testing.assert_array_equal(loadedCoeffs, coeffs)
 
 
-def test_polynomialModelFitsForceThroughOrigin():
-    H, W = 2, 3
-    coeffs = np.zeros((4, H, W), dtype=np.float32)
-    coeffs[1] = 1.0
-    model = PolynomialModel(order=3, forceThroughOrigin=True)
-
-    class Stub:
-        def __init__(self, c):
-            self.coefficients = c
-    hdus = model.toFitsHdus(Stub(coeffs))
-
-    assert hdus[0].header["FTHRU0"] is True
-    loadedModel, loadedCoeffs = PolynomialModel.fromFitsHdus(hdus)
-    assert loadedModel.order == 3
-    assert loadedModel.forceThroughOrigin is True
-    np.testing.assert_array_equal(loadedCoeffs, coeffs)

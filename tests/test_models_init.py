@@ -6,7 +6,7 @@ from relin.models import MODEL_REGISTRY, PolynomialModel, registerModel
 
 
 def test_polynomialRegistered():
-    assert MODEL_REGISTRY["POLYNOMIAL"] is PolynomialModel
+    assert MODEL_REGISTRY["CHEBYSHEV"] is PolynomialModel
 
 
 def test_registerModelAddsEntry():
@@ -31,4 +31,4 @@ def test_registerModelAddsEntry():
 def test_registerModelRejectsDuplicateByDefault():
     import pytest
     with pytest.raises(ValueError):
-        registerModel(PolynomialModel)  # POLYNOMIAL already registered
+        registerModel(PolynomialModel)  # CHEBYSHEV already registered

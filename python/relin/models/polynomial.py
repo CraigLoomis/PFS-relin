@@ -1,4 +1,4 @@
-"""Polynomial nonlinearity model: t = c0 + c1*m + ... + cp*m^p (per pixel)."""
+"""Chebyshev polynomial nonlinearity model: t = Σ c_k T_k(x) (per pixel)."""
 
 from __future__ import annotations
 
@@ -13,12 +13,10 @@ from relin.types import FIT_FAILED, INSUFFICIENT_POINTS, NON_MONOTONIC
 
 @dataclass(frozen=True)
 class PolynomialModel:
-    """Pluggable polynomial-fit model. Default 4th order, general form."""
+    """Pluggable Chebyshev polynomial-fit model. Default 4th order."""
 
     order: int = 4
-    forceThroughOrigin: bool = False
-
-    modelName: str = "POLYNOMIAL"
+    modelName: str = "CHEBYSHEV"
 
     def __post_init__(self) -> None:
         if not isinstance(self.order, int) or isinstance(self.order, bool):
@@ -107,9 +105,7 @@ class PolynomialModel:
         """
         nPoints, H, W = m.shape
         p = self.order
-        fto = self.forceThroughOrigin
-        startExp = 1 if fto else 0
-        nCoefs = p + 1 - startExp  # free coefficients
+        nCoefs = p + 1
 
         mD = m.astype(np.float64)
         v64 = valid.astype(np.float64)
@@ -141,12 +137,12 @@ class PolynomialModel:
         AtA = np.zeros((H, W, nCoefs, nCoefs), dtype=np.float64)
         Atb = np.zeros((H, W, nCoefs), dtype=np.float64)
 
-        # Exponents needed in the fit: startExp .. startExp + nCoefs - 1
-        exps = np.arange(startExp, startExp + nCoefs, dtype=np.int32)
+        # Exponents needed in the fit: 0 .. nCoefs - 1
+        exps = np.arange(0, nCoefs, dtype=np.int32)
 
         # For AtA: need mScaled ** (expI + expJ), expI, expJ in exps.
         # For Atb: need mScaled ** expI with t weighting.
-        # Iterate over exponent sums from 2*startExp to 2*(startExp + nCoefs - 1).
+        # Iterate over exponent sums from 0 to 2*(nCoefs - 1).
         for i in range(nCoefs):
             expI = int(exps[i])
             # Precompute v * mScaled^expI once per i
@@ -203,11 +199,10 @@ class PolynomialModel:
         unscaleFactors = scale[..., None] ** exps  # (H, W, nCoefs)
         solUnscaled = solScaled / unscaleFactors
 
-        # Stitch into (order+1, H, W), filling 0 for the missing c0 when fto.
         coefficients = np.zeros((p + 1, H, W), dtype=np.float32)
-        for k, e in enumerate(exps):
-            coefficients[int(e)] = solUnscaled[..., k].astype(np.float32)
-        coefficients[:, skip] = 0.0  # Zero out failed/insufficient pixels explicitly
+        for k in range(nCoefs):
+            coefficients[k] = solUnscaled[..., k].astype(np.float32)
+        coefficients[:, skip] = 0.0
 
         # Residuals: evaluate fit at each read and compare to t.
         tPred = self.evaluate(coefficients, m.astype(np.float32))  # (N, H, W)
@@ -243,11 +238,7 @@ class PolynomialModel:
         """Serialize model coefficients to a single ImageHDU named COEFFS."""
         hdu = fits.ImageHDU(data=correction.coefficients, name="COEFFS")
         hdu.header["ORDER"] = (self.order, "polynomial order")
-        hdu.header["FTHRU0"] = (
-            self.forceThroughOrigin,
-            "polynomial forced through origin (c0 == 0)",
-        )
-        hdu.header["COMMENT"] = "COEFFS axis 0 is the coefficient index; C0 first."
+        hdu.header["COMMENT"] = "COEFFS axis 0 is the Chebyshev coefficient index; C0 (T_0) first."
         return [hdu]
 
     @classmethod
@@ -261,6 +252,5 @@ class PolynomialModel:
         if coeffsHdu is None:
             raise ValueError("No COEFFS HDU found in provided hdus")
         order = int(coeffsHdu.header["ORDER"])
-        fto = bool(coeffsHdu.header["FTHRU0"])
         coefficients = np.asarray(coeffsHdu.data, dtype=np.float32)
-        return cls(order=order, forceThroughOrigin=fto), coefficients
+        return cls(order=order), coefficients

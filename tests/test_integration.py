@@ -48,7 +48,7 @@ def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
     # camelCase keys directly. We still use ``summary.get`` so the assertion
     # short-circuits cleanly if an upstream change ever renames keys.
     summary = loaded.diagnostics.summary
-    assert summary.get("modelName") == "POLYNOMIAL"
+    assert summary.get("modelName") == "CHEBYSHEV"
     # Good-pixel fraction is 1.0 for this synthetic dataset.
     goodKeys = [k for k in summary if "good" in k.lower()]
     assert goodKeys
