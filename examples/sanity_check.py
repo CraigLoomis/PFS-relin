@@ -156,6 +156,10 @@ def _plotRejections(
     badPixelMask: np.ndarray,
     outPath: Path,
     nPlot: int = 1000,
+    order: int = 4,
+    deviationLimit: float | None = None,
+    nRefReads: int = 5,
+    saturationLevel: float | None = None,
 ) -> None:
     """Plot 2: rejection bar chart and failed-pixel traces."""
     import matplotlib
@@ -167,18 +171,18 @@ def _plotRejections(
 
     # --- Top: bar chart ---
     categories = [
-        ("Good", (badPixelMask == 0).sum()),
-        ("MASKED_BY_INPUT", (badPixelMask & MASKED_BY_INPUT > 0).sum()),
-        ("INSUFFICIENT_POINTS", (badPixelMask & INSUFFICIENT_POINTS > 0).sum()),
-        ("FIT_FAILED", (badPixelMask & FIT_FAILED > 0).sum()),
-        ("NON_MONOTONIC", (badPixelMask & NON_MONOTONIC > 0).sum()),
+        ("MASKED_BY_INPUT", (badPixelMask & MASKED_BY_INPUT > 0).sum(), "C7"),
+        ("INSUFFICIENT_POINTS", (badPixelMask & INSUFFICIENT_POINTS > 0).sum(), "C3"),
+        ("FIT_FAILED", (badPixelMask & FIT_FAILED > 0).sum(), "C1"),
+        ("NON_MONOTONIC", (badPixelMask & NON_MONOTONIC > 0).sum(), "C0"),
     ]
     labels = [c[0] for c in categories]
     counts = [int(c[1]) for c in categories]
+    colors = [c[2] for c in categories]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
 
-    bars = ax1.bar(labels, counts, color=["C2", "C7", "C3", "C1", "C0"])
+    bars = ax1.bar(labels, counts, color=colors)
     ax1.set_ylabel("Pixel count")
     ax1.set_title("Fit rejection categories (flags are not mutually exclusive)")
     for bar, count in zip(bars, counts):
@@ -187,6 +191,20 @@ def _plotRejections(
             bar.get_x() + bar.get_width() / 2, bar.get_height(),
             f"{count:,}\n({pct:.2f}%)", ha="center", va="bottom", fontsize=9,
         )
+
+    # Median good-pixel trace for reference
+    good = badPixelMask == 0
+    N = rawCum.shape[0]
+    reads = np.arange(1, N + 1)
+    if good.any():
+        goodIdx = np.flatnonzero(good.ravel())
+        # Sample up to 10000 good pixels for a stable median
+        rngGood = np.random.default_rng(0)
+        gSample = rngGood.choice(goodIdx, size=min(10000, len(goodIdx)), replace=False)
+        gRows, gCols = gSample // W, gSample % W
+        medianTrace = np.median(rawCum[:, gRows, gCols], axis=1)
+    else:
+        medianTrace = None
 
     # --- Bottom: failed pixel traces ---
     # Exclude MASKED_BY_INPUT (no useful signal)
@@ -197,6 +215,7 @@ def _plotRejections(
     if len(failIdx) == 0:
         ax2.text(0.5, 0.5, "No failed pixels", transform=ax2.transAxes,
                  ha="center", va="center", fontsize=14)
+        K = 0
     else:
         rng = np.random.default_rng(42)
         K = min(nPlot, len(failIdx))
@@ -206,9 +225,6 @@ def _plotRejections(
         fCols = sampleIdx % W
         flags = badPixelMask[fRows, fCols]
 
-        N = rawCum.shape[0]
-        reads = np.arange(1, N + 1)
-
         flagColors = {
             FIT_FAILED: ("C1", "FIT_FAILED"),
             NON_MONOTONIC: ("C0", "NON_MONOTONIC"),
@@ -217,7 +233,6 @@ def _plotRejections(
         plotted = set()
         for k in range(K):
             trace = rawCum[:, fRows[k], fCols[k]]
-            # Use highest-priority flag for color
             for flag, (color, label) in flagColors.items():
                 if flags[k] & flag:
                     lbl = label if label not in plotted else None
@@ -226,13 +241,23 @@ def _plotRejections(
                     plotted.add(label)
                     break
 
-        ax2.legend(loc="upper left")
+    if medianTrace is not None:
+        ax2.plot(reads, medianTrace, "k-", linewidth=1.5, label="median good pixel")
+    ax2.legend(loc="upper left")
 
     ax2.set_xlabel("Read number")
     ax2.set_ylabel("Cumulative DN")
-    ax2.set_title(f"Raw cumulative flux for failed pixels (N={K if len(failIdx) > 0 else 0})")
+    ax2.set_title(f"Raw cumulative flux for failed pixels (N={K})")
 
-    fig.tight_layout()
+    parts = [f"order={order}"]
+    if deviationLimit is not None:
+        parts.append(f"deviationLimit={deviationLimit}, nRefReads={nRefReads}")
+    if saturationLevel is not None:
+        parts.append(f"saturationLevel={saturationLevel:.0f}")
+    if deviationLimit is None and saturationLevel is None:
+        parts.append("no clipping")
+    fig.suptitle(", ".join(parts), fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(outPath, dpi=150)
     plt.close(fig)
     print(f"  Saved {outPath}", flush=True)
@@ -455,6 +480,9 @@ def main() -> None:
             badPixelMask=loaded.badPixelMask,
             outPath=plotDir / f"diagnostic_rejections_{tag}.png",
             nPlot=args.nplot,
+            order=args.order,
+            deviationLimit=args.deviation_limit,
+            saturationLevel=args.saturation_level,
         )
         _plotFitRange(
             fitMin=loaded.fitMin,
