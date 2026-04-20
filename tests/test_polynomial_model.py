@@ -77,28 +77,28 @@ def test_evaluateChebyshevSingleFrameShape():
     np.testing.assert_allclose(t, x, rtol=1e-6)
 
 
-def test_isMonotonicOnLinearCoefficients():
-    """t = m is monotonic everywhere."""
+def test_isMonotonicChebyshevLinear():
+    """t = T_1(x) = x is monotonically increasing on [-1, 1]."""
     model = PolynomialModel(order=2)
     H, W = 2, 3
     coeffs = np.zeros((3, H, W), dtype=np.float32)
     coeffs[1] = 1.0
-    mMin = np.zeros((H, W), dtype=np.float32)
-    mMax = np.full((H, W), 10.0, dtype=np.float32)
+    mMin = np.full((H, W), -1.0, dtype=np.float32)
+    mMax = np.full((H, W), 1.0, dtype=np.float32)
     result = model.isMonotonic(coeffs, mMin, mMax)
     assert result.shape == (H, W)
     assert result.all()
 
 
-def test_isMonotonicDetectsNonMonotonicQuadratic():
-    """t = -m^2 + 2m has derivative -2m + 2, which flips sign at m=1."""
+def test_isMonotonicChebyshevDetectsNonMonotonic():
+    """t = T_2(x) = 2x^2 - 1 has derivative 4x, which is negative for x < 0.
+    On [-1, 1] this is non-monotonic."""
     model = PolynomialModel(order=2)
     H, W = 2, 3
     coeffs = np.zeros((3, H, W), dtype=np.float32)
-    coeffs[1] = 2.0
-    coeffs[2] = -1.0
-    mMin = np.zeros((H, W), dtype=np.float32)
-    mMax = np.full((H, W), 2.0, dtype=np.float32)  # spans the sign flip
+    coeffs[2] = 1.0  # T_2(x) = 2x^2 - 1
+    mMin = np.full((H, W), -1.0, dtype=np.float32)
+    mMax = np.full((H, W), 1.0, dtype=np.float32)
     result = model.isMonotonic(coeffs, mMin, mMax)
     assert not result.any()
 

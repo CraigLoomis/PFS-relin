@@ -70,34 +70,54 @@ class PolynomialModel:
         """Return an ``(H, W)`` boolean map: ``True`` if the fit is monotonically
         increasing on ``[mMin, mMax]`` per pixel.
 
-        Samples the polynomial derivative at ``nSamples`` evenly-spaced points
-        per pixel and reports whether all sampled derivatives are non-negative.
-        Pixels with ``mMin == mMax`` are considered trivially monotonic.
+        Computes the derivative of the Chebyshev series, evaluates it at
+        ``nSamples`` evenly-spaced points on the mapped interval ``[-1, 1]``,
+        and checks that all sampled derivatives (in original m-space) are
+        non-negative.
         """
         coefficients = np.asarray(coefficients, dtype=np.float64)
         order = coefficients.shape[0] - 1
         if order < 1:
             return np.ones(coefficients.shape[1:], dtype=bool)
 
-        # Derivative coefficients: d_i = (i+1) * c_{i+1}, i = 0..order-1
-        derivCoefs = (
-            coefficients[1:] * np.arange(1, order + 1, dtype=np.float64)[:, None, None]
-        )  # shape (order, H, W)
+        # Derivative of Chebyshev series: d/dx [Σ c_k T_k(x)] = Σ d_k T_k(x)
+        # where the derivative coefficients satisfy the recurrence:
+        #   d_{p-1} = 2 * p * c_p
+        #   d_k     = d_{k+2} + 2 * (k+1) * c_{k+1}   for k = p-2, ..., 1
+        #   d_0     = d_2 / 2 + c_1
+        derivCoefs = np.zeros((order, *coefficients.shape[1:]), dtype=np.float64)
+        derivCoefs[order - 1] = 2.0 * order * coefficients[order]
+        for k in range(order - 2, 0, -1):
+            dKplus2 = derivCoefs[k + 2] if k + 2 < order else np.zeros_like(derivCoefs[0])
+            derivCoefs[k] = dKplus2 + 2.0 * (k + 1) * coefficients[k + 1]
+        # d_0: handle the k+2 index carefully (it's 0 if order < 3)
+        d2 = derivCoefs[2] if order >= 3 else np.zeros_like(derivCoefs[0])
+        derivCoefs[0] = d2 / 2.0 + coefficients[1]
 
         H, W = mMin.shape
-        # Evenly-spaced sample points per pixel: shape (nSamples, H, W)
-        fractions = np.linspace(0.0, 1.0, nSamples, dtype=np.float64)
-        samplePoints = (
-            mMin[None] + (mMax - mMin)[None] * fractions[:, None, None]
-        )
+        # Sample x in [-1, 1]
+        xSamples = np.linspace(-1.0, 1.0, nSamples, dtype=np.float64)[:, None, None]
+        xSamples = np.broadcast_to(xSamples, (nSamples, H, W)).copy()
 
-        # Evaluate derivative polynomial at samplePoints via Horner.
-        d = np.full_like(samplePoints, derivCoefs[order - 1], dtype=np.float64)
-        for i in range(order - 2, -1, -1):
-            d = d * samplePoints + derivCoefs[i]
+        # Evaluate derivative Chebyshev series at sample points via Clenshaw.
+        derivOrder = order - 1
+        if derivOrder == 0:
+            d = np.broadcast_to(derivCoefs[0], (nSamples, H, W)).copy()
+        else:
+            bNext = np.zeros((nSamples, H, W), dtype=np.float64)
+            bCurr = np.broadcast_to(
+                derivCoefs[derivOrder], (nSamples, H, W)
+            ).copy().astype(np.float64)
+            for k in range(derivOrder - 1, 0, -1):
+                bPrev = 2.0 * xSamples * bCurr - bNext + derivCoefs[k]
+                bNext = bCurr
+                bCurr = bPrev
+            d = xSamples * bCurr - bNext + derivCoefs[0]
 
-        allNonNegative = (d >= 0).all(axis=0)  # (H, W)
-        # Treat degenerate [mMin == mMax] pixels as monotonic.
+        # Chain rule: dt/dm = (dt/dx) * (dx/dm) = (dt/dx) * 2/(fitMax - fitMin)
+        # For monotonicity we only care about sign, and 2/(fitMax - fitMin) > 0,
+        # so we can just check dt/dx >= 0.
+        allNonNegative = (d >= 0).all(axis=0)
         degenerate = mMax <= mMin
         return allNonNegative | degenerate
 
