@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from relin.types import (
+    BORDER_PIX,
     MASKED_BY_INPUT,
     INSUFFICIENT_POINTS,
     FIT_FAILED,
@@ -18,8 +19,8 @@ from relin.types import (
 
 
 def test_badPixelFlagsAreDistinctPowersOfTwo():
-    flags = [MASKED_BY_INPUT, INSUFFICIENT_POINTS, FIT_FAILED, NON_MONOTONIC]
-    assert flags == [0x01, 0x02, 0x04, 0x08]
+    flags = [MASKED_BY_INPUT, INSUFFICIENT_POINTS, FIT_FAILED, NON_MONOTONIC, BORDER_PIX]
+    assert flags == [0x01, 0x02, 0x04, 0x08, 0x10]
     # Pairwise AND is zero — independent bits
     for i, a in enumerate(flags):
         for b in flags[i + 1:]:

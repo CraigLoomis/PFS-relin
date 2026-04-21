@@ -7,6 +7,7 @@ from relin.fit import fit
 from relin.io import loadFits, saveFits
 from relin.models import Model, PolynomialModel
 from relin.types import (
+    BORDER_PIX,
     FIT_FAILED,
     INSUFFICIENT_POINTS,
     MASKED_BY_INPUT,
@@ -33,4 +34,5 @@ __all__ = [
     "INSUFFICIENT_POINTS",
     "FIT_FAILED",
     "NON_MONOTONIC",
+    "BORDER_PIX",
 ]

@@ -12,6 +12,7 @@ MASKED_BY_INPUT: int = 0x01
 INSUFFICIENT_POINTS: int = 0x02
 FIT_FAILED: int = 0x04
 NON_MONOTONIC: int = 0x08
+BORDER_PIX: int = 0x10
 
 
 @dataclass(frozen=True)

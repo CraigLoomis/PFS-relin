@@ -10,6 +10,7 @@ import numpy as np
 
 from relin.models import Model, PolynomialModel
 from relin.types import (
+    BORDER_PIX,
     FIT_FAILED,
     INSUFFICIENT_POINTS,
     MASKED_BY_INPUT,
@@ -61,6 +62,7 @@ def fit(
     nRefReads: int = 5,
     saturationLevel: float | None = None,
     lowFluxFraction: float = 0.5,
+    borderWidth: int = 4,
 ) -> LinearityCorrection:
     """Fit a per-pixel nonlinearity correction from one or more ramps.
 
@@ -129,6 +131,10 @@ def fit(
         (all reads invalidated). This rejects dead or very dim pixels
         that would otherwise pass per-pixel deviation clipping.
         Default ``0.5``.
+    borderWidth : int, optional
+        Number of border pixels to exclude on each edge of the frame.
+        These are hardware reference pixels and are flagged with
+        ``BORDER_PIX``. Default ``4``.
 
     Returns
     -------
@@ -192,6 +198,13 @@ def fit(
             ).copy()
         else:
             v = np.ones((Nk, H, W), dtype=bool)
+
+        # Mask border pixels (skip if frame is too small).
+        if borderWidth > 0 and H > 2 * borderWidth and W > 2 * borderWidth:
+            v[:, :borderWidth, :] = False
+            v[:, -borderWidth:, :] = False
+            v[:, :, :borderWidth] = False
+            v[:, :, -borderWidth:] = False
 
         deltas = ramp.deltas.astype(np.float32)  # (Nk, H, W)
         nRef = min(nRefReads, Nk)
@@ -330,7 +343,14 @@ def fit(
                     ) from e
                 _storeResult(rs, re, cs, ce, result)
 
-    # Propagate input masks: any nonzero validMask entry in any ramp sets MASKED_BY_INPUT.
+    # Flag border pixels (skip if frame is too small).
+    if borderWidth > 0 and H > 2 * borderWidth and W > 2 * borderWidth:
+        badPixelMask[:borderWidth, :] |= BORDER_PIX
+        badPixelMask[-borderWidth:, :] |= BORDER_PIX
+        badPixelMask[:, :borderWidth] |= BORDER_PIX
+        badPixelMask[:, -borderWidth:] |= BORDER_PIX
+
+    # Propagate caller-supplied input masks.
     for ramp in ramps:
         if ramp.validMask is not None:
             inputBad = (ramp.validMask != 0)
@@ -342,6 +362,7 @@ def fit(
     summary: dict = {
         "totalPixels": totalPixels,
         "goodPixelFraction": float(goodPixels.sum()) / totalPixels,
+        "badPixelFraction_borderPix": float((badPixelMask & BORDER_PIX > 0).sum()) / totalPixels,
         "badPixelFraction_maskedByInput": float((badPixelMask & MASKED_BY_INPUT > 0).sum()) / totalPixels,
         "badPixelFraction_insufficientPoints": float((badPixelMask & INSUFFICIENT_POINTS > 0).sum()) / totalPixels,
         "badPixelFraction_fitFailed": float((badPixelMask & FIT_FAILED > 0).sum()) / totalPixels,

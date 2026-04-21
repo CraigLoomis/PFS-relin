@@ -29,5 +29,6 @@ def test_publicApiExports():
         "INSUFFICIENT_POINTS",
         "FIT_FAILED",
         "NON_MONOTONIC",
+        "BORDER_PIX",
     ]:
         assert hasattr(relin, attr), f"relin.{attr} missing"

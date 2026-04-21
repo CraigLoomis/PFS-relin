@@ -16,6 +16,7 @@ import numpy as np
 import relin
 from relin.loaders import loadNpz
 from relin.types import (
+    BORDER_PIX,
     FIT_FAILED,
     INSUFFICIENT_POINTS,
     MASKED_BY_INPUT,
@@ -45,16 +46,24 @@ def _plotBeforeAfter(
     nRefReads: int = 5,
     saturationLevel: float | None = None,
     seed: int = 0,
+    badPixelMask: np.ndarray | None = None,
 ) -> None:
     """Plot 1: before/after linearization for random good pixels."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    # Filter to good pixels only
+    if badPixelMask is not None:
+        isGood = badPixelMask[rows, cols] == 0
+        goodRows, goodCols = rows[isGood], cols[isGood]
+    else:
+        goodRows, goodCols = rows, cols
+
     rng = np.random.default_rng(seed)
-    K = min(nPlot, len(rows))
-    pick = rng.choice(len(rows), size=K, replace=False)
-    pRows, pCols = rows[pick], cols[pick]
+    K = min(nPlot, len(goodRows))
+    pick = rng.choice(len(goodRows), size=K, replace=False)
+    pRows, pCols = goodRows[pick], goodCols[pick]
 
     N = rawCum.shape[0]
     reads = np.arange(1, N + 1)
@@ -162,7 +171,6 @@ def _plotRejections(
     nRefReads: int = 5,
     saturationLevel: float | None = None,
     seed: int = 0,
-    borderMask: np.ndarray | None = None,
 ) -> None:
     """Plot 2: rejection bar chart and failed-pixel traces."""
     import matplotlib
@@ -174,7 +182,8 @@ def _plotRejections(
 
     # --- Top: bar chart ---
     categories = [
-        ("MASKED_BY_INPUT", (badPixelMask & MASKED_BY_INPUT > 0).sum(), "C7"),
+        ("BORDER_PIX", (badPixelMask & BORDER_PIX > 0).sum(), "C7"),
+        ("MASKED_BY_INPUT", (badPixelMask & MASKED_BY_INPUT > 0).sum(), "C8"),
         ("INSUFFICIENT_POINTS", (badPixelMask & INSUFFICIENT_POINTS > 0).sum(), "C3"),
         ("FIT_FAILED", (badPixelMask & FIT_FAILED > 0).sum(), "C1"),
         ("NON_MONOTONIC", (badPixelMask & NON_MONOTONIC > 0).sum(), "C0"),
@@ -195,9 +204,8 @@ def _plotRejections(
             f"{count:,}\n({pct:.2f}%)", ha="center", va="bottom", fontsize=9,
         )
 
-    # Median good-pixel trace for reference (exclude border)
-    interior = (borderMask == 0) if borderMask is not None else np.ones(badPixelMask.shape, dtype=bool)
-    good = (badPixelMask == 0) & interior
+    # Median good-pixel trace for reference (exclude border and all bad pixels)
+    good = badPixelMask == 0
     N = rawCum.shape[0]
     reads = np.arange(1, N + 1)
     if good.any():
@@ -212,7 +220,8 @@ def _plotRejections(
     # --- Bottom: failed pixel traces ---
     # Exclude MASKED_BY_INPUT (no useful signal)
     failFlags = INSUFFICIENT_POINTS | FIT_FAILED | NON_MONOTONIC
-    failed = ((badPixelMask & failFlags) != 0) & interior
+    notBorder = (badPixelMask & BORDER_PIX) == 0
+    failed = ((badPixelMask & failFlags) != 0) & notBorder
     failIdx = np.flatnonzero(failed.ravel())
 
     if len(failIdx) == 0:
@@ -365,21 +374,18 @@ def main() -> None:
     )
     correctedDeltas = ramp.deltas * scale[:, None, None]
 
-    # Build border mask: nonzero = invalid. The 4-pixel border is a
-    # hardware reference region and must be excluded from fitting.
     H, W = correctedDeltas.shape[1:]
-    borderMask = np.zeros((H, W), dtype=np.uint8)
-    borderMask[:4, :] = 1
-    borderMask[-4:, :] = 1
-    borderMask[:, :4] = 1
-    borderMask[:, -4:] = 1
-
-    correctedRamp = Ramp(deltas=correctedDeltas, validMask=borderMask)
+    correctedRamp = Ramp(deltas=correctedDeltas)
     t1 = _t("photodiode correction applied", t1)
 
     # Sample pixel indices from all interior pixels BEFORE fitting, so
     # the same pixels are plotted regardless of clipping parameters.
-    interior = borderMask == 0
+    # The 4-pixel border is excluded by fit() via borderWidth.
+    interior = np.ones((H, W), dtype=bool)
+    interior[:4, :] = False
+    interior[-4:, :] = False
+    interior[:, :4] = False
+    interior[:, -4:] = False
     rng = np.random.default_rng(args.seed)
     interiorIdx = np.flatnonzero(interior.ravel())
     sampleIdx = rng.choice(interiorIdx, size=min(10000, len(interiorIdx)), replace=False)
@@ -493,6 +499,7 @@ def main() -> None:
             deviationLimit=args.deviation_limit,
             saturationLevel=args.saturation_level,
             seed=args.seed,
+            badPixelMask=loaded.badPixelMask,
         )
         _plotRejections(
             rawCum=rawCum,
@@ -503,7 +510,6 @@ def main() -> None:
             deviationLimit=args.deviation_limit,
             saturationLevel=args.saturation_level,
             seed=args.seed,
-            borderMask=borderMask,
         )
         _plotFitRange(
             fitMin=loaded.fitMin,
