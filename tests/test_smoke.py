@@ -30,6 +30,7 @@ def test_publicApiExports():
         "FIT_FAILED",
         "NON_MONOTONIC",
         "BORDER_PIX",
-        "OUT_OF_RANGE",
+        "ABOVE_VALID_RANGE",
+        "BELOW_VALID_RANGE",
     ]:
         assert hasattr(nirLinearity, attr), f"nirLinearity.{attr} missing"

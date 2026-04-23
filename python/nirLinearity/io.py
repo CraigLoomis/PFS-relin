@@ -56,7 +56,7 @@ def saveFits(path: str | Path, correction: LinearityCorrection) -> None:
     bpHdu = fits.ImageHDU(data=correction.badPixelMask, name="BPMASK")
     bpHdu.header["COMMENT"] = "Bit flags: MASKED_BY_INPUT=0x01 INSUFFICIENT_POINTS=0x02"
     bpHdu.header["COMMENT"] = "          FIT_FAILED=0x04 NON_MONOTONIC=0x08 BORDER_PIX=0x10"
-    bpHdu.header["COMMENT"] = "          OUT_OF_RANGE=0x20"
+    bpHdu.header["COMMENT"] = "          BELOW_VALID_RANGE=0x20 ABOVE_VALID_RANGE=0x40"
     resRmsHdu = fits.ImageHDU(
         data=correction.diagnostics.residualRms, name="RESRMS"
     )

@@ -12,7 +12,8 @@ from .types import (
     INSUFFICIENT_POINTS,
     MASKED_BY_INPUT,
     NON_MONOTONIC,
-    OUT_OF_RANGE,
+    ABOVE_VALID_RANGE,
+    BELOW_VALID_RANGE,
     Diagnostics,
     LinearityCorrection,
     LinearizedRamp,
@@ -36,5 +37,6 @@ __all__ = [
     "FIT_FAILED",
     "NON_MONOTONIC",
     "BORDER_PIX",
-    "OUT_OF_RANGE",
+    "ABOVE_VALID_RANGE",
+    "BELOW_VALID_RANGE",
 ]

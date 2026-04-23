@@ -11,7 +11,8 @@ from nirLinearity.types import (
     INSUFFICIENT_POINTS,
     FIT_FAILED,
     NON_MONOTONIC,
-    OUT_OF_RANGE,
+    ABOVE_VALID_RANGE,
+    BELOW_VALID_RANGE,
     Ramp,
     LinearizedRamp,
     Diagnostics,
@@ -20,8 +21,8 @@ from nirLinearity.types import (
 
 
 def test_badPixelFlagsAreDistinctPowersOfTwo():
-    flags = [MASKED_BY_INPUT, INSUFFICIENT_POINTS, FIT_FAILED, NON_MONOTONIC, BORDER_PIX, OUT_OF_RANGE]
-    assert flags == [0x01, 0x02, 0x04, 0x08, 0x10, 0x20]
+    flags = [MASKED_BY_INPUT, INSUFFICIENT_POINTS, FIT_FAILED, NON_MONOTONIC, BORDER_PIX, BELOW_VALID_RANGE, ABOVE_VALID_RANGE]
+    assert flags == [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40]
     # Pairwise AND is zero — independent bits
     for i, a in enumerate(flags):
         for b in flags[i + 1:]:

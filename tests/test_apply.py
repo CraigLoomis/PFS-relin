@@ -8,7 +8,7 @@ import pytest
 from nirLinearity.apply import apply, applyFrame
 from nirLinearity.fit import fit
 from nirLinearity.models import PolynomialModel
-from nirLinearity.types import OUT_OF_RANGE, Ramp
+from nirLinearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE, Ramp
 
 
 def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):
@@ -23,7 +23,7 @@ def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):
         result.cumulativeLinear, expected, rtol=1e-3, atol=1e-1
     )
     # No pixel should be out-of-range on the same data it was fit on.
-    assert not (result.badPixelMask & OUT_OF_RANGE).any()
+    assert not (result.badPixelMask & (BELOW_VALID_RANGE | ABOVE_VALID_RANGE)).any()
 
 
 def test_applyFlagsOutOfRangeForExtrapolation():
@@ -38,7 +38,7 @@ def test_applyFlagsOutOfRangeForExtrapolation():
     extrapReads = np.ones((1, H, W), dtype=np.float32) * np.arange(1, 21, dtype=np.float32)[:, None, None]
     result = apply(correction, Ramp(reads=extrapReads))
     # All pixels have reads beyond fit_max, so OUT_OF_RANGE should be set.
-    assert (result.badPixelMask & OUT_OF_RANGE).all()
+    assert (result.badPixelMask & ABOVE_VALID_RANGE).all()
 
 
 def test_applyLeavesBadPixelsUntouched(tinyLinearRamp):

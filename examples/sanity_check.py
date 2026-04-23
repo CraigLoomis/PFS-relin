@@ -535,10 +535,12 @@ def main() -> None:
             flush=True,
         )
 
-        from nirLinearity.types import OUT_OF_RANGE
-        oorCount = int((result.badPixelMask & OUT_OF_RANGE > 0).sum())
-        oorFrac = oorCount / result.badPixelMask.size
-        print(f"  out-of-range pixel fraction: {oorFrac:.4f}", flush=True)
+        from nirLinearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE
+        belowCount = int((result.badPixelMask & BELOW_VALID_RANGE > 0).sum())
+        aboveCount = int((result.badPixelMask & ABOVE_VALID_RANGE > 0).sum())
+        nPix = result.badPixelMask.size
+        print(f"  below-range pixel fraction: {belowCount / nPix:.4f}", flush=True)
+        print(f"  above-range pixel fraction: {aboveCount / nPix:.4f}", flush=True)
         _t("done (fit)", t0)
 
     # ---- Plot ----

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .types import OUT_OF_RANGE, LinearityCorrection, LinearizedRamp, Ramp
+from .types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE, LinearityCorrection, LinearizedRamp, Ramp
 
 
 def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
@@ -29,7 +29,8 @@ def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
     x = 2.0 * (m - correction.fitMin[None]) / denom[None] - 1.0
 
     t = correction.model.evaluate(correction.coefficients, x)
-    oor = (m < correction.fitMin[None]) | (m > correction.fitMax[None])
+    below = m < correction.fitMin[None]
+    above = m > correction.fitMax[None]
 
     # Bad-pixel pass-through: copy input m for any pixel with badPixelMask != 0.
     bad = correction.badPixelMask != 0
@@ -37,7 +38,8 @@ def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
         t = np.where(bad[None], m, t)
 
     bpm = correction.badPixelMask.copy()
-    bpm[oor.any(axis=0)] |= OUT_OF_RANGE
+    bpm[below.any(axis=0)] |= BELOW_VALID_RANGE
+    bpm[above.any(axis=0)] |= ABOVE_VALID_RANGE
 
     return LinearizedRamp(
         cumulativeLinear=t.astype(np.float32),
