@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from relin.apply import apply, applyFrame
-from relin.fit import fit
-from relin.models import PolynomialModel
-from relin.types import Ramp
+from nirLinearity.apply import apply, applyFrame
+from nirLinearity.fit import fit
+from nirLinearity.models import PolynomialModel
+from nirLinearity.types import Ramp
 
 
 def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):

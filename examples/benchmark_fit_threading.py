@@ -1,7 +1,7 @@
 """Benchmark: fit() wall-clock across worker counts.
 
 Reads the example lab ramp, applies the standard illumination-drift
-photodiode correction, then runs `relin.fit` for several worker counts
+photodiode correction, then runs `nirLinearity.fit` for several worker counts
 and prints a timing table. Not a test — no pass/fail criteria.
 
 Usage:
@@ -19,9 +19,9 @@ from pathlib import Path
 
 import numpy as np
 
-import relin
-from relin.loaders import loadNpz
-from relin.types import Ramp
+import nirLinearity
+from nirLinearity.loaders import loadNpz
+from nirLinearity.types import Ramp
 
 
 def main() -> int:
@@ -52,11 +52,11 @@ def main() -> int:
     # Warm-up call so the first measurement isn't paying first-touch costs
     # on memory allocations / imported BLAS libraries.
     print("Warm-up run (workers=1) ...", flush=True)
-    _ = relin.fit([correctedRamp], blockSize=(512, 512), workers=1)
+    _ = nirLinearity.fit([correctedRamp], blockSize=(512, 512), workers=1)
 
     for w in workerCounts:
         t0 = time.perf_counter()
-        correction = relin.fit(
+        correction = nirLinearity.fit(
             [correctedRamp], blockSize=(512, 512), workers=w
         )
         elapsed = time.perf_counter() - t0

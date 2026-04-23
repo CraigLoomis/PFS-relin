@@ -1,4 +1,4 @@
-"""relin — per-pixel nonlinearity correction for IR detector ramps."""
+"""nirLinearity — per-pixel nonlinearity correction for IR detector ramps."""
 
 from __future__ import annotations
 

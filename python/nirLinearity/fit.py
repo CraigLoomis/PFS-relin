@@ -27,7 +27,7 @@ _SMALL_FRAME_PIXEL_LIMIT = 1_000_000   # H*W below this → sequential default
 _DEFAULT_WORKER_CAP = 8                # auto-detected cpu_count is capped here
 
 # Override point for tests. Default is the real ThreadPoolExecutor; a test
-# can `monkeypatch.setattr("relin.fit._executorFactory", ...)` to observe
+# can `monkeypatch.setattr("nirLinearity.fit._executorFactory", ...)` to observe
 # construction or to inject a recording executor.
 _executorFactory = ThreadPoolExecutor
 

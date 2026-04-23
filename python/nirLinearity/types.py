@@ -1,4 +1,4 @@
-"""Data types and bad-pixel flag constants for relin."""
+"""Data types and bad-pixel flag constants for nirLinearity."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class Ramp:
 
 @dataclass(frozen=True)
 class LinearizedRamp:
-    """Output of :func:`relin.apply.apply` on a :class:`Ramp`."""
+    """Output of :func:`nirLinearity.apply.apply` on a :class:`Ramp`."""
 
     cumulativeLinear: np.ndarray   # (N, H, W) float32
     outOfRangeMask: np.ndarray     # (N, H, W) bool

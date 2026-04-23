@@ -8,8 +8,8 @@ import threading
 import numpy as np
 import pytest
 
-from relin.fit import _resolveWorkerCount, fit
-from relin.models import PolynomialModel
+from nirLinearity.fit import _resolveWorkerCount, fit
+from nirLinearity.models import PolynomialModel
 
 
 def test_resolveWorkerCountExplicitIntIsReturnedAsIs():
@@ -30,7 +30,7 @@ def test_resolveWorkerCountSmallFrameDefaultsToOne():
 
 def test_resolveWorkerCountLargeFrameCapsAtEight(monkeypatch):
     # When H*W >= 1_000_000 and os.cpu_count() > 8, cap at 8.
-    fitModule = sys.modules["relin.fit"]
+    fitModule = sys.modules["nirLinearity.fit"]
     monkeypatch.setattr(fitModule.os, "cpu_count", lambda: 16)
     assert _resolveWorkerCount(None, 2000, 500) == 8  # 1_000_000 exactly
     assert _resolveWorkerCount(None, 4096, 4096) == 8
@@ -38,14 +38,14 @@ def test_resolveWorkerCountLargeFrameCapsAtEight(monkeypatch):
 
 def test_resolveWorkerCountLargeFrameUncappedBelowEight(monkeypatch):
     # When H*W is large but os.cpu_count() < 8, use cpu_count.
-    fitModule = sys.modules["relin.fit"]
+    fitModule = sys.modules["nirLinearity.fit"]
     monkeypatch.setattr(fitModule.os, "cpu_count", lambda: 4)
     assert _resolveWorkerCount(None, 4096, 4096) == 4
 
 
 def test_resolveWorkerCountHandlesNoneCpuCount(monkeypatch):
     # os.cpu_count() can return None on some platforms; fall back to 1.
-    fitModule = sys.modules["relin.fit"]
+    fitModule = sys.modules["nirLinearity.fit"]
     monkeypatch.setattr(fitModule.os, "cpu_count", lambda: None)
     assert _resolveWorkerCount(None, 4096, 4096) == 1
 
@@ -109,7 +109,7 @@ def test_fitWorkers4ProducesByteIdenticalOutputToWorkers1(smallSyntheticRamp):
 
 def test_fitWorkers1DoesNotConstructExecutor(monkeypatch, smallSyntheticRamp):
     """The sequential fast path must not touch the executor factory at all."""
-    fitModule = sys.modules["relin.fit"]
+    fitModule = sys.modules["nirLinearity.fit"]
 
     def _fail(*args, **kwargs):
         raise AssertionError(
@@ -126,7 +126,7 @@ def test_fitWorkers4ConstructsExecutorWithMaxWorkers4(
     monkeypatch, smallSyntheticRamp
 ):
     """When workers=4, the factory must be called with max_workers=4."""
-    fitModule = sys.modules["relin.fit"]
+    fitModule = sys.modules["nirLinearity.fit"]
     from concurrent.futures import ThreadPoolExecutor
 
     recorded = {}
@@ -147,7 +147,7 @@ def test_fitAutoWorkersUsesResolvedCount(monkeypatch, smallSyntheticRamp):
     """With workers=None and a small frame, resolved count is 1 (no executor
     call). This mirrors test_fitWorkers1DoesNotConstructExecutor but via the
     default code path rather than explicit workers=1."""
-    fitModule = sys.modules["relin.fit"]
+    fitModule = sys.modules["nirLinearity.fit"]
 
     called = []
     monkeypatch.setattr(

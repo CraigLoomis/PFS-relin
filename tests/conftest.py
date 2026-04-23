@@ -1,11 +1,11 @@
-"""Shared pytest fixtures for relin tests."""
+"""Shared pytest fixtures for nirLinearity tests."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from relin.types import Ramp
+from nirLinearity.types import Ramp
 
 
 def _buildSyntheticReads(

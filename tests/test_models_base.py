@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from relin.models.base import BlockFitResult, Model
+from nirLinearity.models.base import BlockFitResult, Model
 
 
 def test_blockFitResultConstruction():

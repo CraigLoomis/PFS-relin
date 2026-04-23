@@ -13,9 +13,9 @@ from .models import MODEL_REGISTRY
 from .types import Diagnostics, LinearityCorrection
 
 
-def _relinVersion() -> str:
+def _packageVersion() -> str:
     try:
-        return version("relin")
+        return version("nirLinearity")
     except PackageNotFoundError:
         return "unknown"
 
@@ -33,7 +33,7 @@ def saveFits(path: str | Path, correction: LinearityCorrection) -> None:
         _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
         "ISO-8601 fit timestamp",
     )
-    primaryHeader["RELINVER"] = (_relinVersion(), "relin package version")
+    primaryHeader["RELINVER"] = (_packageVersion(), "nirLinearity package version")
     # Scalar summary fields. Long keys become HIERARCH cards (case-preserved);
     # short keys are uppercased by FITS and the original Python key is stored in
     # the comment so ``loadFits`` can reconstruct the dict without collisions.

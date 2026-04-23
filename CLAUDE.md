@@ -1,11 +1,11 @@
-# relin
+# nirLinearity
 
 Per-pixel polynomial nonlinearity correction for IR-detector up-the-ramp data.
 
 ## Conventions
 
 - **camelCase** for Python function names, method names, and variable names — not snake_case. Applies to tests too. Classes remain PascalCase. Constants remain UPPER_SNAKE_CASE. Module filenames stay short/single-word where possible; use camelCase only for compound module names. Do not "correct" existing camelCase to snake_case.
-- Package source lives at `python/relin/` (not `src/relin/`). Tests at `tests/`.
+- Package source lives at `python/nirLinearity/` (not `src/`). Tests at `tests/`.
 
 ## Tooling
 

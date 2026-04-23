@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from relin.fit import fit
-from relin.models import PolynomialModel
-from relin.types import MASKED_BY_INPUT, Ramp
+from nirLinearity.fit import fit
+from nirLinearity.models import PolynomialModel
+from nirLinearity.types import MASKED_BY_INPUT, Ramp
 
 
 def test_fitSingleRampRecoversTarget(smallSyntheticRamp):

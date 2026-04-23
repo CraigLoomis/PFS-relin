@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from relin.models import MODEL_REGISTRY, PolynomialModel, registerModel
+from nirLinearity.models import MODEL_REGISTRY, PolynomialModel, registerModel
 
 
 def test_polynomialRegistered():

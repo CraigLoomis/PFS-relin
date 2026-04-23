@@ -1,4 +1,4 @@
-"""Sanity check: run relin on a real 4096x4096x29 lab ramp.
+"""Sanity check: run nirLinearity on a real 4096x4096x29 lab ramp.
 
 Loads the example NPZ, applies a standard photodiode correction
 (illumination-drift normalization to the first read), fits, saves FITS,
@@ -13,9 +13,9 @@ from pathlib import Path
 
 import numpy as np
 
-import relin
-from relin.loaders import loadNpz
-from relin.types import (
+import nirLinearity
+from nirLinearity.loaders import loadNpz
+from nirLinearity.types import (
     BORDER_PIX,
     FIT_FAILED,
     INSUFFICIENT_POINTS,
@@ -385,7 +385,7 @@ def _buildTag(summary: dict, pdTag: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sanity check relin on a real ramp")
+    parser = argparse.ArgumentParser(description="Sanity check nirLinearity on a real ramp")
     parser.add_argument("--fit", action="store_true",
                         help="Fit and save a linearity correction FITS file")
     parser.add_argument("--plot", action="store_true",
@@ -451,10 +451,10 @@ def main() -> None:
         rows = sampleIdx // W
         cols = sampleIdx % W
 
-        from relin.models import PolynomialModel
+        from nirLinearity.models import PolynomialModel
         model = PolynomialModel(order=args.order)
         print(f"Fitting (blockSize=(512, 512), order={args.order}) ...", flush=True)
-        correction = relin.fit(
+        correction = nirLinearity.fit(
             [correctedRamp], blockSize=(512, 512),
             model=model,
             deviationLimit=args.deviation_limit,
@@ -462,7 +462,7 @@ def main() -> None:
             saturationLevel=args.saturation_level,
             lowFluxFraction=args.low_flux_fraction,
         )
-        t1 = _t("relin.fit", t0)
+        t1 = _t("nirLinearity.fit", t0)
 
         print("Summary diagnostics:", flush=True)
         for k, v in correction.diagnostics.summary.items():
@@ -487,13 +487,13 @@ def main() -> None:
 
         outDir.mkdir(exist_ok=True)
         print(f"Saving to {fitsPath} ...", flush=True)
-        relin.saveFits(fitsPath, correction)
-        t1 = _t("relin.saveFits", t1)
+        nirLinearity.saveFits(fitsPath, correction)
+        t1 = _t("nirLinearity.saveFits", t1)
         print(f"  FITS size: {fitsPath.stat().st_size / 1e6:.1f} MB", flush=True)
 
         print("Reloading FITS ...", flush=True)
-        loaded = relin.loadFits(fitsPath)
-        t1 = _t("relin.loadFits", t1)
+        loaded = nirLinearity.loadFits(fitsPath)
+        t1 = _t("nirLinearity.loadFits", t1)
 
         coefMatch = np.array_equal(loaded.coefficients, correction.coefficients)
         bpMatch = np.array_equal(loaded.badPixelMask, correction.badPixelMask)
@@ -501,8 +501,8 @@ def main() -> None:
         print(f"  badPixelMask bitwise-equal:   {bpMatch}", flush=True)
 
         print("Applying correction to input ramp ...", flush=True)
-        result = relin.apply(loaded, correctedRamp)
-        t1 = _t("relin.apply", t1)
+        result = nirLinearity.apply(loaded, correctedRamp)
+        t1 = _t("nirLinearity.apply", t1)
 
         good = loaded.badPixelMask == 0
         nGood = int(good.sum())
@@ -562,8 +562,8 @@ def main() -> None:
         cols = sampleIdx % W
 
         print(f"Loading {fitsPath} ...", flush=True)
-        loaded = relin.loadFits(fitsPath)
-        t1 = _t("relin.loadFits", t0)
+        loaded = nirLinearity.loadFits(fitsPath)
+        t1 = _t("nirLinearity.loadFits", t0)
 
         summary = loaded.diagnostics.summary
         order = summary.get("order", "?")
@@ -572,8 +572,8 @@ def main() -> None:
         nRefReads = summary.get("nRefReads", 5)
 
         print("Applying correction to input ramp ...", flush=True)
-        result = relin.apply(loaded, correctedRamp)
-        t1 = _t("relin.apply", t1)
+        result = nirLinearity.apply(loaded, correctedRamp)
+        t1 = _t("nirLinearity.apply", t1)
 
         rawCum = correctedRamp.reads.astype(np.float32)
 

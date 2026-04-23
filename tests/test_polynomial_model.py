@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from relin.models.polynomial import PolynomialModel
+from nirLinearity.models.polynomial import PolynomialModel
 
 
 def test_defaultConstructor():
@@ -107,7 +107,7 @@ def test_isMonotonicChebyshevDetectsNonMonotonic():
 # fitBlock tests
 # ---------------------------------------------------------------------------
 
-from relin.types import (
+from nirLinearity.types import (
     MASKED_BY_INPUT,  # noqa: F401  (used transitively; referenced below)
     INSUFFICIENT_POINTS,
     FIT_FAILED,
@@ -174,7 +174,7 @@ def test_fitBlockFlagsFitFailedWhenIllConditioned():
 def test_fitBlockFlagsNonMonotonicFit():
     """A fit that produces a non-monotonic polynomial on its domain must set
     NON_MONOTONIC and must not set INSUFFICIENT_POINTS or FIT_FAILED."""
-    from relin.types import NON_MONOTONIC
+    from nirLinearity.types import NON_MONOTONIC
     # Construct t vs m such that the best-fit quadratic peaks inside the range:
     # target is a down-opening parabola in m. m spans [0, 2], t = -m^2 + 2m
     # (peak at m=1). Use a 2x2 pixel block with identical data everywhere.

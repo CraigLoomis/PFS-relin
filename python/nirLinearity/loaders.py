@@ -15,7 +15,7 @@ def loadNpz(path: str | Path) -> tuple[Ramp, np.ndarray]:
     The on-disk format stores per-read deltas; this loader converts to
     cumulative flux (``np.cumsum``) before constructing the :class:`Ramp`.
     The caller is expected to apply the photodiode correction before
-    passing the ramp into :func:`relin.fit.fit`.
+    passing the ramp into :func:`nirLinearity.fit.fit`.
     """
     path = Path(path)
     with np.load(path) as data:

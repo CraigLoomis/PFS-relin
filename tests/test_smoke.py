@@ -1,17 +1,17 @@
 """Smoke test: the package imports cleanly."""
 
 def test_packageImports():
-    import relin
-    assert relin is not None
+    import nirLinearity
+    assert nirLinearity is not None
 
 
 def test_modelsSubpackageImports():
-    import relin.models
-    assert relin.models is not None
+    import nirLinearity.models
+    assert nirLinearity.models is not None
 
 
 def test_publicApiExports():
-    import relin
+    import nirLinearity
 
     for attr in [
         "Ramp",
@@ -31,4 +31,4 @@ def test_publicApiExports():
         "NON_MONOTONIC",
         "BORDER_PIX",
     ]:
-        assert hasattr(relin, attr), f"relin.{attr} missing"
+        assert hasattr(nirLinearity, attr), f"nirLinearity.{attr} missing"

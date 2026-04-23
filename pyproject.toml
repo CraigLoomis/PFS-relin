@@ -3,7 +3,7 @@ requires = ["uv_build>=0.5"]
 build-backend = "uv_build"
 
 [project]
-name = "relin"
+name = "nirLinearity"
 version = "0.1.0"
 description = "Per-pixel nonlinearity correction for IR detector ramps"
 readme = "README.md"
@@ -23,8 +23,8 @@ dev = [
 ]
 
 [tool.uv.build-backend]
-# Our package lives at python/relin/ rather than the default src/relin/.
-module-name = "relin"
+# Our package lives at python/nirLinearity/ rather than the default src layout.
+module-name = "nirLinearity"
 module-root = "python"
 
 [tool.pytest.ini_options]

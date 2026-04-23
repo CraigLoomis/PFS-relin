@@ -4,22 +4,22 @@ from __future__ import annotations
 
 import numpy as np
 
-import relin
+import nirLinearity
 
 
 def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
     ramp, truth = smallSyntheticRamp
 
     # Fit with a small block size to exercise the tiling path.
-    correction = relin.fit([ramp], blockSize=(2, 3))
+    correction = nirLinearity.fit([ramp], blockSize=(2, 3))
 
     # Save + load round trip.
     path = tmp_path / "correction.fits"
-    relin.saveFits(path, correction)
-    loaded = relin.loadFits(path)
+    nirLinearity.saveFits(path, correction)
+    loaded = nirLinearity.loadFits(path)
 
     # Apply loaded correction to the original ramp.
-    result = relin.apply(loaded, ramp)
+    result = nirLinearity.apply(loaded, ramp)
 
     # The fit infers its own target rate R = median(reads[0]); for a fixture
     # whose pixels solve polynomial(m[n]) = rateTrue * (n+1), the fit recovers
