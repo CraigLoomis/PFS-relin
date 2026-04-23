@@ -59,6 +59,7 @@ def fit(
     workers: int | None = None,
     conditionNumberLimit: float = 1e12,
     deviationLimit: float | None = None,
+    deviationStart: float = 0.5,
     nRefReads: int = 5,
     saturationLevel: float | None = None,
     lowFluxFraction: float = 0.5,
@@ -218,10 +219,14 @@ def fit(
         v[:, lowFlux] = False
 
         if deviationLimit is not None:
+            startRead = int(Nk * deviationStart)
             with np.errstate(divide="ignore", invalid="ignore"):
                 frac = np.abs(deltas - refDelta[None]) / np.abs(refDelta[None])
             frac = np.where(np.isfinite(frac), frac, 0.0)
             exceeds = frac > deviationLimit  # (Nk, H, W)
+            # Only apply from startRead onward (early reads are not
+            # near saturation and shouldn't trigger the limit).
+            exceeds[:startRead] = False
             exceeds = np.maximum.accumulate(exceeds, axis=0)
             v[exceeds] = False
 
@@ -369,7 +374,18 @@ def fit(
         "badPixelFraction_nonMonotonic": float((badPixelMask & NON_MONOTONIC > 0).sum()) / totalPixels,
         "modelName": model.modelName,
         "nRamps": len(ramps),
+        "order": model.order,
+        "blockSize": f"{blockSize[0]}x{blockSize[1]}",
+        "borderWidth": borderWidth,
+        "conditionNumberLimit": conditionNumberLimit,
+        "nRefReads": nRefReads,
+        "lowFluxFraction": lowFluxFraction,
     }
+    if deviationLimit is not None:
+        summary["deviationLimit"] = deviationLimit
+        summary["deviationStart"] = deviationStart
+    if saturationLevel is not None:
+        summary["saturationLevel"] = saturationLevel
     if goodPixels.any():
         goodRms = residualRms[goodPixels]
         summary["residualRmsP50"] = float(np.percentile(goodRms, 50))

@@ -229,12 +229,74 @@ class PolynomialModel:
         residualRms = np.sqrt((residuals ** 2).sum(axis=0) / nForDiv).astype(np.float32)
         maxAbsResidual = np.abs(residuals).max(axis=0).astype(np.float32)
 
-        # Monotonicity check
+        # Monotonicity check — retry non-monotonic pixels at lower orders.
         monotonic = self.isMonotonic(
             coefficients, fitMin.astype(np.float32), fitMax.astype(np.float32)
         )
         monotonic[skip] = False
         nonMono = (~skip) & (~monotonic)
+
+        for retryOrder in range(p - 1, 0, -1):
+            retryIdx = np.flatnonzero(nonMono.ravel())
+            if len(retryIdx) == 0:
+                break
+            retryNCoefs = retryOrder + 1
+            # Need at least retryNCoefs + 1 valid points.
+            canRetry = nonMono & (nPointsUsed >= retryNCoefs + 1)
+            retryIdx = np.flatnonzero(canRetry.ravel())
+            if len(retryIdx) == 0:
+                continue
+            rr = retryIdx // W
+            rc = retryIdx % W
+
+            # Build normal equations for these pixels at the reduced order.
+            rAtA = np.zeros((len(retryIdx), retryNCoefs, retryNCoefs), dtype=np.float64)
+            rAtb = np.zeros((len(retryIdx), retryNCoefs), dtype=np.float64)
+            for i in range(retryNCoefs):
+                vTi = v64[:, rr, rc] * tCheb[i][:, rr, rc]  # (N, nRetry)
+                rAtb[:, i] = (vTi * t64[:, None]).sum(axis=0)
+                for j in range(i, retryNCoefs):
+                    val = (vTi * tCheb[j][:, rr, rc]).sum(axis=0)
+                    rAtA[:, i, j] = val
+                    if i != j:
+                        rAtA[:, j, i] = val
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rCond = np.linalg.cond(rAtA)
+            goodCond = np.isfinite(rCond) & (rCond <= conditionNumberLimit)
+
+            # Solve good-condition pixels.
+            solveIdx = np.flatnonzero(goodCond)
+            if len(solveIdx) == 0:
+                continue
+            try:
+                rSol = np.linalg.solve(rAtA[solveIdx], rAtb[solveIdx, :, None])[..., 0]
+            except np.linalg.LinAlgError:
+                continue
+
+            # Check monotonicity of retried fits.
+            for si, ri in enumerate(solveIdx):
+                pxR, pxC = rr[ri], rc[ri]
+                trialCoefs = np.zeros((nCoefs, 1, 1), dtype=np.float32)
+                for k in range(retryNCoefs):
+                    trialCoefs[k, 0, 0] = rSol[si, k]
+                fm = fitMin[pxR, pxC].astype(np.float32).reshape(1, 1)
+                fM = fitMax[pxR, pxC].astype(np.float32).reshape(1, 1)
+                if self.isMonotonic(trialCoefs, fm, fM)[0, 0]:
+                    for k in range(nCoefs):
+                        coefficients[k, pxR, pxC] = trialCoefs[k, 0, 0]
+                    monotonic[pxR, pxC] = True
+                    nonMono[pxR, pxC] = False
+                    conditionNumber[pxR, pxC] = rCond[ri]
+                    # Recompute residuals for this pixel.
+                    xPx = x[:, pxR, pxC].astype(np.float32).reshape(-1, 1, 1)
+                    tPredPx = self.evaluate(trialCoefs, xPx)[:, 0, 0]
+                    vPx = valid[:, pxR, pxC]
+                    resPx = (t.astype(np.float32) - tPredPx) * vPx
+                    nPx = max(int(nPointsUsed[pxR, pxC]), 1)
+                    residualRms[pxR, pxC] = np.sqrt((resPx ** 2).sum() / nPx)
+                    maxAbsResidual[pxR, pxC] = np.abs(resPx).max()
+
         badMask[nonMono] |= NON_MONOTONIC
 
         return BlockFitResult(
