@@ -15,13 +15,13 @@ def test_fitSingleRampRecoversTarget(smallSyntheticRamp):
     assert correction.coefficients.shape == (5, 4, 5)
     assert (correction.badPixelMask == 0).all()
     # Evaluate at the fit points: map m → x, then evaluate.
-    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
+    m = ramp.reads.astype(np.float32)
     denom = correction.fitMax - correction.fitMin
     denom = np.where(denom > 0, denom, 1.0)
     x = 2.0 * (m - correction.fitMin[None]) / denom[None] - 1.0
     tPred = correction.model.evaluate(correction.coefficients, x)
-    fitRate = float(np.median(ramp.deltas[0]))
-    N = ramp.deltas.shape[0]
+    fitRate = float(np.median(ramp.reads[0]))
+    N = ramp.reads.shape[0]
     expected = fitRate * np.arange(1, N + 1, dtype=np.float32)
     expectedBroad = np.broadcast_to(expected[:, None, None], tPred.shape)
     np.testing.assert_allclose(tPred, expectedBroad, rtol=1e-3, atol=1.0)
@@ -42,9 +42,9 @@ def test_fitTilingIsDeterministic(smallSyntheticRamp):
 
 def test_fitPropagatesInputMask(tinyLinearRamp):
     ramp, _ = tinyLinearRamp
-    mask = np.zeros(ramp.deltas.shape[1:], dtype=np.uint8)
+    mask = np.zeros(ramp.reads.shape[1:], dtype=np.uint8)
     mask[0, 0] = 1  # Mark pixel (0, 0) as invalid
-    maskedRamp = Ramp(deltas=ramp.deltas, validMask=mask)
+    maskedRamp = Ramp(reads=ramp.reads, validMask=mask)
     correction = fit([maskedRamp], model=PolynomialModel(order=1))
     assert correction.badPixelMask[0, 0] & MASKED_BY_INPUT
     assert correction.badPixelMask[0, 1] == 0
@@ -58,14 +58,14 @@ def test_fitMultipleRampsConcatenates():
     # Ramp 2: 12 reads, rate 200.
     rate1 = 100.0
     rate2 = 200.0
-    deltas1 = np.full((8, H, W), rate1, dtype=np.float32)
-    deltas2 = np.full((12, H, W), rate2, dtype=np.float32)
+    reads1 = np.full((1, H, W), rate1, dtype=np.float32) * np.arange(1, 9, dtype=np.float32)[:, None, None]
+    reads2 = np.full((1, H, W), rate2, dtype=np.float32) * np.arange(1, 13, dtype=np.float32)[:, None, None]
     correction = fit(
-        [Ramp(deltas=deltas1), Ramp(deltas=deltas2)],
+        [Ramp(reads=reads1), Ramp(reads=reads2)],
         model=PolynomialModel(order=2),
     )
     # Verify via evaluation: for ramp1, evaluate at its m values → should match targets.
-    m1 = np.cumsum(deltas1, axis=0)
+    m1 = reads1
     denom = correction.fitMax - correction.fitMin
     denom = np.where(denom > 0, denom, 1.0)
     x1 = 2.0 * (m1 - correction.fitMin[None]) / denom[None] - 1.0

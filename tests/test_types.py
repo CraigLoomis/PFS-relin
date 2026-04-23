@@ -29,24 +29,24 @@ def test_badPixelFlagsAreDistinctPowersOfTwo():
 
 def test_rampConstructsWithoutMask():
     deltas = np.zeros((3, 4, 5), dtype=np.float32)
-    ramp = Ramp(deltas=deltas)
-    assert ramp.deltas.shape == (3, 4, 5)
+    ramp = Ramp(reads=deltas)
+    assert ramp.reads.shape == (3, 4, 5)
     assert ramp.validMask is None
 
 
 def test_rampConstructsWithMask():
     deltas = np.zeros((3, 4, 5), dtype=np.float32)
     mask = np.zeros((4, 5), dtype=np.uint8)
-    ramp = Ramp(deltas=deltas, validMask=mask)
+    ramp = Ramp(reads=deltas, validMask=mask)
     assert ramp.validMask is not None
     assert ramp.validMask.shape == (4, 5)
 
 
 def test_rampIsFrozen():
     deltas = np.zeros((3, 4, 5), dtype=np.float32)
-    ramp = Ramp(deltas=deltas)
+    ramp = Ramp(reads=deltas)
     with pytest.raises(Exception):  # FrozenInstanceError
-        ramp.deltas = np.zeros((3, 4, 5), dtype=np.float32)
+        ramp.reads = np.zeros((3, 4, 5), dtype=np.float32)
 
 
 def test_linearizedRampConstruction():

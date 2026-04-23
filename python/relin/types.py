@@ -17,17 +17,19 @@ BORDER_PIX: int = 0x10
 
 @dataclass(frozen=True)
 class Ramp:
-    """A single ramp's photodiode-corrected deltas plus an optional pixel mask.
+    """A single ramp's cumulative flux at each non-destructive read.
 
     Parameters
     ----------
-    deltas
-        Shape ``(N, H, W)``, float32. Already photodiode-corrected.
+    reads
+        Shape ``(N, H, W)``, float32. Cumulative signal, already
+        photodiode-corrected.  ``reads[n]`` is the total accumulated
+        flux through read *n*.
     validMask
         Shape ``(H, W)``; 0 means valid. May be ``None`` for "all pixels valid".
     """
 
-    deltas: np.ndarray
+    reads: np.ndarray
     validMask: np.ndarray | None = None
 
 

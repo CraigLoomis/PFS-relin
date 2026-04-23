@@ -17,7 +17,8 @@ def _makeCorrection():
     H, W = 4, 5
     deltas = np.full((10, H, W), 100.0, dtype=np.float32)
     deltas += rng.normal(0.0, 0.1, size=deltas.shape).astype(np.float32)
-    return fit([Ramp(deltas=deltas)], model=PolynomialModel(order=2))
+    reads = np.cumsum(deltas, axis=0)
+    return fit([Ramp(reads=reads)], model=PolynomialModel(order=2))
 
 
 def test_saveLoadRoundTrip(tmp_path):

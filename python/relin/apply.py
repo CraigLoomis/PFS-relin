@@ -9,19 +9,19 @@ from relin.types import LinearityCorrection, LinearizedRamp, Ramp
 
 def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
     """Linearize a full ramp."""
-    if ramp.deltas.ndim != 3:
+    if ramp.reads.ndim != 3:
         raise ValueError(
-            f"ramp.deltas must be 3-D (N, H, W); got {ramp.deltas.shape}"
+            f"ramp.reads must be 3-D (N, H, W); got {ramp.reads.shape}"
         )
-    if ramp.deltas.shape[0] == 0:
+    if ramp.reads.shape[0] == 0:
         raise ValueError("ramp has zero reads")
-    if ramp.deltas.shape[1:] != correction.coefficients.shape[1:]:
+    if ramp.reads.shape[1:] != correction.coefficients.shape[1:]:
         raise ValueError(
-            f"ramp H,W = {ramp.deltas.shape[1:]} does not match "
+            f"ramp H,W = {ramp.reads.shape[1:]} does not match "
             f"correction H,W = {correction.coefficients.shape[1:]}"
         )
 
-    m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)  # (N, H, W)
+    m = ramp.reads.astype(np.float32)  # (N, H, W)
 
     # Map m → x ∈ [-1, 1] for Chebyshev evaluation
     denom = correction.fitMax - correction.fitMin

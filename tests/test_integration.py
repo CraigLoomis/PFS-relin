@@ -21,17 +21,17 @@ def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
     # Apply loaded correction to the original ramp.
     result = relin.apply(loaded, ramp)
 
-    # The fit infers its own target rate R = median(deltas[0]); for a fixture
+    # The fit infers its own target rate R = median(reads[0]); for a fixture
     # whose pixels solve polynomial(m[n]) = rateTrue * (n+1), the fit recovers
     # a SCALED polynomial so that polynomial_fit(m[n]) = R * (n+1) — i.e. the
     # correction's output trajectory is R * (n+1), which generally differs
     # from the fixture's truth["target"] by a small scale factor. Compare
     # against the fit's self-inferred target grid, not the fixture's truth.
-    fitRate = float(np.median(ramp.deltas[0]))
-    N = ramp.deltas.shape[0]
+    fitRate = float(np.median(ramp.reads[0]))
+    N = ramp.reads.shape[0]
     expectedCurve = fitRate * np.arange(1, N + 1, dtype=np.float32)
     expected = np.broadcast_to(
-        expectedCurve[:, None, None], ramp.deltas.shape
+        expectedCurve[:, None, None], ramp.reads.shape
     )
     residual = result.cumulativeLinear - expected
     # Residuals should be small for every pixel.

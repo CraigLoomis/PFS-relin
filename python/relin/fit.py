@@ -150,15 +150,15 @@ def fit(
         raise ValueError("fit() requires at least one ramp")
 
     # Validate shapes.
-    H, W = ramps[0].deltas.shape[1:]
+    H, W = ramps[0].reads.shape[1:]
     for k, ramp in enumerate(ramps):
-        if ramp.deltas.ndim != 3:
+        if ramp.reads.ndim != 3:
             raise ValueError(
-                f"ramps[{k}].deltas must be 3-D (N, H, W); got {ramp.deltas.shape}"
+                f"ramps[{k}].reads must be 3-D (N, H, W); got {ramp.reads.shape}"
             )
-        if ramp.deltas.shape[1:] != (H, W):
+        if ramp.reads.shape[1:] != (H, W):
             raise ValueError(
-                f"ramps[{k}].deltas H,W = {ramp.deltas.shape[1:]} "
+                f"ramps[{k}].reads H,W = {ramp.reads.shape[1:]} "
                 f"does not match ramps[0] H,W = {(H, W)}"
             )
         if ramp.validMask is not None and ramp.validMask.shape != (H, W):
@@ -172,19 +172,19 @@ def fit(
     cumulatives: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     for ramp in ramps:
-        m = np.cumsum(ramp.deltas.astype(np.float32), axis=0)
+        m = ramp.reads.astype(np.float32)
         cumulatives.append(m)
-        # Rate R_k: median of first-read deltas over caller-allowed pixels.
-        firstDeltas = ramp.deltas[0].astype(np.float32)
+        # Rate R_k: median of first read (= first delta) over allowed pixels.
+        firstRead = m[0]
         if ramp.validMask is not None:
             allowed = ramp.validMask == 0
             if allowed.any():
-                rate = float(np.median(firstDeltas[allowed]))
+                rate = float(np.median(firstRead[allowed]))
             else:
-                rate = float(np.median(firstDeltas))
+                rate = float(np.median(firstRead))
         else:
-            rate = float(np.median(firstDeltas))
-        Nk = ramp.deltas.shape[0]
+            rate = float(np.median(firstRead))
+        Nk = ramp.reads.shape[0]
         targets.append(rate * np.arange(1, Nk + 1, dtype=np.float32))
 
     # Deviation-based clipping: for each ramp, mask reads where the measured
@@ -192,7 +192,7 @@ def fit(
     # Store per-ramp (Nk, H, W) validity arrays for use in tile assembly.
     rampValidity: list[np.ndarray] = []
     for k, ramp in enumerate(ramps):
-        Nk = ramp.deltas.shape[0]
+        Nk = ramp.reads.shape[0]
         if ramp.validMask is not None:
             v = np.broadcast_to(
                 (ramp.validMask == 0)[None], (Nk, H, W)
@@ -207,7 +207,11 @@ def fit(
             v[:, :, :borderWidth] = False
             v[:, :, -borderWidth:] = False
 
-        deltas = ramp.deltas.astype(np.float32)  # (Nk, H, W)
+        # Recover per-read deltas for deviation and low-flux checks.
+        m = cumulatives[k]
+        deltas = np.empty_like(m)
+        deltas[0] = m[0]
+        deltas[1:] = np.diff(m, axis=0)
         nRef = min(nRefReads, Nk)
         refDelta = np.median(deltas[:nRef], axis=0)  # (H, W)
 

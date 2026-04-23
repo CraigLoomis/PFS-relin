@@ -341,8 +341,8 @@ def _loadInputRamp(dataDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
     t1 = _t("loadNpz", t0)
 
     print(
-        f"  deltas: shape={ramp.deltas.shape} dtype={ramp.deltas.dtype} "
-        f"min={ramp.deltas.min():.4g} max={ramp.deltas.max():.4g}",
+        f"  reads: shape={ramp.reads.shape} dtype={ramp.reads.dtype} "
+        f"min={ramp.reads.min():.4g} max={ramp.reads.max():.4g}",
         flush=True,
     )
     print(
@@ -352,16 +352,20 @@ def _loadInputRamp(dataDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
 
     if noPhotodiode:
         print("  photodiode correction: DISABLED", flush=True)
-        correctedDeltas = ramp.deltas
+        correctedReads = ramp.reads
     else:
-        scale = (photodiode[0] / photodiode).astype(np.float32)
+        # Scale each read's increment by the photodiode ratio, then re-accumulate.
+        scale = (photodiode[0] / photodiode).astype(np.float32)  # (N,)
         print(
             f"  photodiode scale range: min={scale.min():.6f} max={scale.max():.6f}",
             flush=True,
         )
-        correctedDeltas = ramp.deltas * scale[:, None, None]
+        deltas = np.empty_like(ramp.reads)
+        deltas[0] = ramp.reads[0]
+        deltas[1:] = np.diff(ramp.reads, axis=0)
+        correctedReads = np.cumsum(deltas * scale[:, None, None], axis=0)
 
-    correctedRamp = Ramp(deltas=correctedDeltas)
+    correctedRamp = Ramp(reads=correctedReads)
     _t("photodiode correction applied" if not noPhotodiode else "photodiode correction skipped", t1)
 
     return correctedRamp, dataPath
@@ -432,7 +436,7 @@ def main() -> None:
     if args.fit:
         t0 = time.perf_counter()
         correctedRamp, dataPath = _loadInputRamp(dataDir, args.no_photodiode)
-        H, W = correctedRamp.deltas.shape[1:]
+        H, W = correctedRamp.reads.shape[1:]
 
         # Sample pixel indices from all interior pixels BEFORE fitting, so
         # the same pixels are reported regardless of clipping parameters.
@@ -544,7 +548,7 @@ def main() -> None:
             )
 
         correctedRamp, _ = _loadInputRamp(dataDir, args.no_photodiode)
-        H, W = correctedRamp.deltas.shape[1:]
+        H, W = correctedRamp.reads.shape[1:]
 
         interior = np.ones((H, W), dtype=bool)
         interior[:4, :] = False
@@ -571,7 +575,7 @@ def main() -> None:
         result = relin.apply(loaded, correctedRamp)
         t1 = _t("relin.apply", t1)
 
-        rawCum = np.cumsum(correctedRamp.deltas.astype(np.float32), axis=0)
+        rawCum = correctedRamp.reads.astype(np.float32)
 
         print("Generating diagnostic plots ...", flush=True)
         _plotDiagnostic(
@@ -582,7 +586,7 @@ def main() -> None:
             badPixelMask=loaded.badPixelMask,
             rows=rows,
             cols=cols,
-            rate=float(np.median(correctedRamp.deltas[0])),
+            rate=float(np.median(correctedRamp.reads[0])),
             outPath=outDir / f"diagnostic.{args.plot_format}",
             nPlot=args.nplot,
             order=order,
