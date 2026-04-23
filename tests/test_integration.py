@@ -40,7 +40,7 @@ def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
 
     # No bad pixels, no out-of-range flags on the fitting data itself.
     assert (loaded.badPixelMask == 0).all()
-    assert not result.outOfRangeMask.any()
+    assert (result.badPixelMask == 0).all()
 
     # Summary is populated and sane. `io.py` preserves summary keys through
     # the FITS round-trip (HIERARCH cards for >8-char keys, and the original

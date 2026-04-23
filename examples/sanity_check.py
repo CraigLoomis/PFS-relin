@@ -535,8 +535,10 @@ def main() -> None:
             flush=True,
         )
 
-        oorFrac = float(result.outOfRangeMask.sum()) / result.outOfRangeMask.size
-        print(f"  out-of-range sample fraction: {oorFrac:.4f}", flush=True)
+        from nirLinearity.types import OUT_OF_RANGE
+        oorCount = int((result.badPixelMask & OUT_OF_RANGE > 0).sum())
+        oorFrac = oorCount / result.badPixelMask.size
+        print(f"  out-of-range pixel fraction: {oorFrac:.4f}", flush=True)
         _t("done (fit)", t0)
 
     # ---- Plot ----

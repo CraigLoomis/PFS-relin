@@ -13,6 +13,7 @@ INSUFFICIENT_POINTS: int = 0x02
 FIT_FAILED: int = 0x04
 NON_MONOTONIC: int = 0x08
 BORDER_PIX: int = 0x10
+OUT_OF_RANGE: int = 0x20
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,6 @@ class LinearizedRamp:
     """Output of :func:`nirLinearity.apply.apply` on a :class:`Ramp`."""
 
     cumulativeLinear: np.ndarray   # (N, H, W) float32
-    outOfRangeMask: np.ndarray     # (N, H, W) bool
     badPixelMask: np.ndarray       # (H, W) uint8
 
 

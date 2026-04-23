@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .types import LinearityCorrection, LinearizedRamp, Ramp
+from .types import OUT_OF_RANGE, LinearityCorrection, LinearizedRamp, Ramp
 
 
 def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
@@ -36,10 +36,12 @@ def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
     if bad.any():
         t = np.where(bad[None], m, t)
 
+    bpm = correction.badPixelMask.copy()
+    bpm[oor.any(axis=0)] |= OUT_OF_RANGE
+
     return LinearizedRamp(
         cumulativeLinear=t.astype(np.float32),
-        outOfRangeMask=oor,
-        badPixelMask=correction.badPixelMask.copy(),
+        badPixelMask=bpm,
     )
 
 

@@ -11,6 +11,7 @@ from nirLinearity.types import (
     INSUFFICIENT_POINTS,
     FIT_FAILED,
     NON_MONOTONIC,
+    OUT_OF_RANGE,
     Ramp,
     LinearizedRamp,
     Diagnostics,
@@ -19,8 +20,8 @@ from nirLinearity.types import (
 
 
 def test_badPixelFlagsAreDistinctPowersOfTwo():
-    flags = [MASKED_BY_INPUT, INSUFFICIENT_POINTS, FIT_FAILED, NON_MONOTONIC, BORDER_PIX]
-    assert flags == [0x01, 0x02, 0x04, 0x08, 0x10]
+    flags = [MASKED_BY_INPUT, INSUFFICIENT_POINTS, FIT_FAILED, NON_MONOTONIC, BORDER_PIX, OUT_OF_RANGE]
+    assert flags == [0x01, 0x02, 0x04, 0x08, 0x10, 0x20]
     # Pairwise AND is zero — independent bits
     for i, a in enumerate(flags):
         for b in flags[i + 1:]:
@@ -52,11 +53,9 @@ def test_rampIsFrozen():
 def test_linearizedRampConstruction():
     lin = LinearizedRamp(
         cumulativeLinear=np.zeros((3, 4, 5), dtype=np.float32),
-        outOfRangeMask=np.zeros((3, 4, 5), dtype=bool),
         badPixelMask=np.zeros((4, 5), dtype=np.uint8),
     )
     assert lin.cumulativeLinear.shape == (3, 4, 5)
-    assert lin.outOfRangeMask.dtype == bool
     assert lin.badPixelMask.dtype == np.uint8
 
 

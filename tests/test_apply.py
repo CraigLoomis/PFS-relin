@@ -8,7 +8,7 @@ import pytest
 from nirLinearity.apply import apply, applyFrame
 from nirLinearity.fit import fit
 from nirLinearity.models import PolynomialModel
-from nirLinearity.types import Ramp
+from nirLinearity.types import OUT_OF_RANGE, Ramp
 
 
 def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):
@@ -23,7 +23,7 @@ def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):
         result.cumulativeLinear, expected, rtol=1e-3, atol=1e-1
     )
     # No pixel should be out-of-range on the same data it was fit on.
-    assert not result.outOfRangeMask.any()
+    assert not (result.badPixelMask & OUT_OF_RANGE).any()
 
 
 def test_applyFlagsOutOfRangeForExtrapolation():
@@ -37,8 +37,8 @@ def test_applyFlagsOutOfRangeForExtrapolation():
     # Build a ramp whose cumulative values exceed fit_max.
     extrapReads = np.ones((1, H, W), dtype=np.float32) * np.arange(1, 21, dtype=np.float32)[:, None, None]
     result = apply(correction, Ramp(reads=extrapReads))
-    # Reads beyond index 4 are extrapolated (m > fit_max of original fit).
-    assert result.outOfRangeMask[10:].all()
+    # All pixels have reads beyond fit_max, so OUT_OF_RANGE should be set.
+    assert (result.badPixelMask & OUT_OF_RANGE).all()
 
 
 def test_applyLeavesBadPixelsUntouched(tinyLinearRamp):
@@ -71,7 +71,6 @@ def test_applyFrameMatchesApplyOnSingleRead(smallSyntheticRamp):
     np.testing.assert_allclose(
         linFrame, fullResult.cumulativeLinear[-1], rtol=1e-6
     )
-    np.testing.assert_array_equal(oorFrame, fullResult.outOfRangeMask[-1])
 
 
 def test_applyRejectsShapeMismatch(tinyLinearRamp):
