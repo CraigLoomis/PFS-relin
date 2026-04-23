@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from .types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE, LinearityCorrection, LinearizedRamp, Ramp
+from .types import (
+    ABOVE_VALID_RANGE,
+    BELOW_VALID_RANGE,
+    MASKED_BY_INPUT,
+    LinearityCorrection,
+    LinearizedRamp,
+    Ramp,
+)
 
 
 def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
@@ -32,12 +39,16 @@ def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:
     below = m < correction.fitMin[None]
     above = m > correction.fitMax[None]
 
+    # Merge the ramp's own validMask into the bad-pixel mask.
+    bpm = correction.badPixelMask.copy()
+    if ramp.validMask is not None:
+        bpm[ramp.validMask != 0] |= MASKED_BY_INPUT
+
     # Bad-pixel pass-through: copy input m for any pixel with badPixelMask != 0.
-    bad = correction.badPixelMask != 0
+    bad = bpm != 0
     if bad.any():
         t = np.where(bad[None], m, t)
 
-    bpm = correction.badPixelMask.copy()
     bpm[below.any(axis=0)] |= BELOW_VALID_RANGE
     bpm[above.any(axis=0)] |= ABOVE_VALID_RANGE
 
