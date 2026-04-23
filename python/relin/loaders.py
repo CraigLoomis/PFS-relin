@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from relin.types import Ramp
+from .types import Ramp
 
 
 def loadNpz(path: str | Path) -> tuple[Ramp, np.ndarray]:

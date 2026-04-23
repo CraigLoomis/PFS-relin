@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 
-from relin.models import MODEL_REGISTRY
-from relin.types import Diagnostics, LinearityCorrection
+from .models import MODEL_REGISTRY
+from .types import Diagnostics, LinearityCorrection
 
 
 def _relinVersion() -> str:

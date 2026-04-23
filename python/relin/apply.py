@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from relin.types import LinearityCorrection, LinearizedRamp, Ramp
+from .types import LinearityCorrection, LinearizedRamp, Ramp
 
 
 def apply(correction: LinearityCorrection, ramp: Ramp) -> LinearizedRamp:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from relin.models.base import BlockFitResult, Model
-from relin.models.polynomial import PolynomialModel
+from .base import BlockFitResult, Model
+from .polynomial import PolynomialModel
 
 MODEL_REGISTRY: dict[str, type[Model]] = {}
 

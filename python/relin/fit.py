@@ -8,8 +8,8 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 
 import numpy as np
 
-from relin.models import Model, PolynomialModel
-from relin.types import (
+from .models import Model, PolynomialModel
+from .types import (
     BORDER_PIX,
     FIT_FAILED,
     INSUFFICIENT_POINTS,

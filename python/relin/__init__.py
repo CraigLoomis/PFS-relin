@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from relin.apply import apply, applyFrame
-from relin.fit import fit
-from relin.io import loadFits, saveFits
-from relin.models import Model, PolynomialModel
-from relin.types import (
+from .apply import apply, applyFrame
+from .fit import fit
+from .io import loadFits, saveFits
+from .models import Model, PolynomialModel
+from .types import (
     BORDER_PIX,
     FIT_FAILED,
     INSUFFICIENT_POINTS,

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 from astropy.io import fits
 
-from relin.models.base import BlockFitResult
-from relin.types import FIT_FAILED, INSUFFICIENT_POINTS, NON_MONOTONIC
+from .base import BlockFitResult
+from ..types import FIT_FAILED, INSUFFICIENT_POINTS, NON_MONOTONIC
 
 
 @dataclass(frozen=True)
