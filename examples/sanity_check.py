@@ -453,9 +453,9 @@ def main() -> None:
 
         from nirLinearity.models import PolynomialModel
         model = PolynomialModel(order=args.order)
-        print(f"Fitting (blockSize=(512, 512), order={args.order}) ...", flush=True)
+        print(f"Fitting (order={args.order}) ...", flush=True)
         correction = nirLinearity.fit(
-            [correctedRamp], blockSize=(512, 512),
+            [correctedRamp],
             model=model,
             deviationLimit=args.deviation_limit,
             deviationStart=args.deviation_start,

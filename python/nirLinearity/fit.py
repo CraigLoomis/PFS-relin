@@ -55,7 +55,7 @@ def _resolveWorkerCount(workers: int | None, H: int, W: int) -> int:
 def fit(
     ramps: Sequence[Ramp],
     model: Model | None = None,
-    blockSize: tuple[int, int] = (512, 512),
+    blockSize: tuple[int, int] = (128, 128),
     workers: int | None = None,
     conditionNumberLimit: float = 1e12,
     deviationLimit: float | None = None,
@@ -79,8 +79,9 @@ def fit(
         Model to fit. Defaults to ``PolynomialModel(order=4)``.
     blockSize : (int, int), optional
         Tile size in pixels for the per-tile normal-equations fit.
-        Default is ``(512, 512)``. Smaller tiles reduce peak memory;
-        larger tiles reduce per-tile overhead.
+        Default is ``(128, 128)``, chosen by sweep on a 4096×4096×29
+        reference workload with the auto worker count. Smaller tiles
+        reduce peak memory; larger tiles reduce per-tile overhead.
     workers : int or None, optional
         Number of worker threads for the tile loop.
 
@@ -315,8 +316,8 @@ def fit(
         # compute on independent numpy arrays (no shared mutable state).
         # Note: ThreadPoolExecutor.submit has no back-pressure, so all
         # tiles' assembled (mTile, validTile) arrays coexist in memory
-        # until their futures complete. On 4096x4096 with blockSize=(512,
-        # 512), that is 64 tiles of roughly tile-sized float32 plus a
+        # until their futures complete. On 4096x4096 with blockSize=(128,
+        # 128), that is 1024 tiles of roughly tile-sized float32 plus a
         # small bool array each — manageable on the reference workload
         # but worth keeping in mind if tile size grows.
         with _executorFactory(max_workers=effectiveWorkers) as executor:
