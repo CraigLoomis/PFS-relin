@@ -1,18 +1,22 @@
 """Benchmark: fit() wall-clock across worker counts.
 
-Reads the example lab ramp, applies the standard illumination-drift
-photodiode correction, then runs `nirLinearity.fit` for several worker counts
-and prints a timing table. Not a test — no pass/fail criteria.
+Runs `nirLinearity.fit` for several worker counts at fixed
+``blockSize=(512, 512)`` and prints a timing table. Not a test — no
+pass/fail criteria.
+
+By default the input is a synthetic ramp (linear with mild per-pixel
+saturation and read noise) so the script is self-contained and
+portable. Pass ``--data-path`` to benchmark on a real lab NPZ instead;
+the standard illumination-drift photodiode correction is applied.
 
 Usage:
     uv run python examples/benchmark_fit_threading.py
-
-The dataset is not in the repo (see .gitignore); if it's missing, the
-script prints a pointer and exits cleanly.
+    uv run python examples/benchmark_fit_threading.py --data-path path/to.npz
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -23,26 +27,36 @@ import nirLinearity
 from nirLinearity.loaders import loadNpz
 from nirLinearity.types import Ramp
 
+from syntheticRamp import syntheticRamp
+
 
 def main() -> int:
-    dataPath = Path("examples/linearity/18734/18734_164220.npz")
-    if not dataPath.exists():
-        print(
-            f"Data file missing: {dataPath}\n"
-            "Place the lab NPZ at that path (see .gitignore)."
-        )
-        return 1
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--data-path", type=str, default=None,
+        help="Path to a lab NPZ ramp; if omitted, a synthetic 4096x4096x30 "
+             "ramp is generated",
+    )
+    args = parser.parse_args()
 
-    print(f"Loading {dataPath} ...", flush=True)
-    ramp, photodiode = loadNpz(dataPath)
-    scale = (photodiode[0] / photodiode).astype(np.float32)
-    deltas = np.empty_like(ramp.reads)
-    deltas[0] = ramp.reads[0]
-    deltas[1:] = np.diff(ramp.reads, axis=0)
-    correctedReads = np.cumsum(deltas * scale[:, None, None], axis=0)
-    correctedRamp = Ramp(reads=correctedReads)
+    if args.data_path is None:
+        print("No --data-path provided; generating synthetic ramp ...", flush=True)
+        correctedRamp = syntheticRamp()
+    else:
+        dataPath = Path(args.data_path)
+        if not dataPath.exists():
+            print(f"Data file missing: {dataPath}")
+            return 1
+        print(f"Loading {dataPath} ...", flush=True)
+        ramp, photodiode = loadNpz(dataPath)
+        scale = (photodiode[0] / photodiode).astype(np.float32)
+        deltas = np.empty_like(ramp.reads)
+        deltas[0] = ramp.reads[0]
+        deltas[1:] = np.diff(ramp.reads, axis=0)
+        correctedReads = np.cumsum(deltas * scale[:, None, None], axis=0)
+        correctedRamp = Ramp(reads=correctedReads)
     print(
-        f"  shape={correctedReads.shape} dtype={correctedReads.dtype}",
+        f"  shape={correctedRamp.reads.shape} dtype={correctedRamp.reads.dtype}",
         flush=True,
     )
 
