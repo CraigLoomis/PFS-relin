@@ -1,22 +1,23 @@
 """Benchmark: fit() wall-clock across blockSize values.
 
-Reads the example lab ramp, applies the standard illumination-drift
-photodiode correction, then runs `nirLinearity.fit` at each candidate
+Runs `nirLinearity.fit` on a 4096x4096x30 ramp at each candidate
 blockSize and prints a timing table plus a recommended default for this
 machine. Not a test — no pass/fail criteria.
+
+By default the input is a synthetic ramp (linear with mild per-pixel
+saturation and read noise) so the script is self-contained and
+portable. Pass `--data-path` to benchmark on a real lab NPZ instead.
 
 Usage:
     uv run python examples/benchmark_fit_blocksize.py
     uv run python examples/benchmark_fit_blocksize.py --sizes 32,64,128,256,512
     uv run python examples/benchmark_fit_blocksize.py --trials 3 --workers 8
+    uv run python examples/benchmark_fit_blocksize.py --data-path path/to.npz
 
 Defaults probe a geometric sweep [32, 64, 128, 256, 512] with 2 trials,
 which takes 5–10 minutes on a typical workstation and is enough to pick
 a reasonable blockSize. Tune with the same `workers` value you'll use
 in production — the optimum shifts with thread count.
-
-The dataset is not in the repo (see .gitignore); if it's missing, the
-script prints a pointer and exits cleanly.
 """
 
 from __future__ import annotations
@@ -31,6 +32,49 @@ import numpy as np
 import nirLinearity
 from nirLinearity.loaders import loadNpz
 from nirLinearity.types import Ramp
+
+
+def _syntheticRamp(
+    N: int = 30, H: int = 4096, W: int = 4096,
+    seed: int = 0, deadFraction: float = 0.01,
+) -> Ramp:
+    """Generate a synthetic ramp for benchmarking when no real data is given.
+
+    Per-pixel: linear with ~10% rate variation, mild quadratic droop
+    (~5% at the last read, simulating detector saturation onset), small
+    read noise. About `deadFraction` of pixels (default 1%) are "dead":
+    rate well below the lowFluxFraction cutoff but cumulatives still
+    span a wide range, so the per-pixel matrix is well-conditioned —
+    the fit rejects them cleanly via the lowFlux mask rather than
+    FIT_FAILED. The resulting goodPixelFraction is ~98%, close to
+    typical lab data.
+
+    Generates ~2 GB of float32 (the (30, 4096, 4096) reads array) plus a
+    couple of (4096, 4096) per-pixel parameter arrays. Read noise is
+    added per-read to keep peak memory bounded.
+    """
+    rng = np.random.default_rng(seed)
+    # Per-pixel rate: mean 2000 DN/read, 10% sigma. The natural tail
+    # stays well above the lowFluxFraction=0.5 cutoff (1000 DN/read).
+    rate = (2000.0 + 200.0 * rng.standard_normal((H, W))).astype(np.float32)
+    # Dead pixels: rate ~100 DN/read (well below the 1000 cutoff). Cumulatives
+    # still span 100..3000 so the polynomial fit is well-conditioned even
+    # though the lowFlux mask rejects them.
+    deadMask = rng.random((H, W)) < deadFraction
+    rate[deadMask] = 100.0
+    # Per-pixel droop amplitude: 5% nominal, 1% sigma. cumRaw =
+    # cumLinear * (1 - droopAmp * (cumLinear / fullScale)^2).
+    droopAmp = (0.05 + 0.01 * rng.standard_normal((H, W))).astype(np.float32)
+    fullScale = np.float32(N * 2000.0)
+
+    reads = np.empty((N, H, W), dtype=np.float32)
+    for k in range(N):
+        cumLinear = rate * np.float32(k + 1)
+        x = cumLinear / fullScale
+        reads[k] = cumLinear * (1.0 - droopAmp * x * x)
+        reads[k] += 10.0 * rng.standard_normal((H, W), dtype=np.float32)
+
+    return Ramp(reads=reads)
 
 
 def _parseSizes(s: str) -> list[int]:
@@ -63,30 +107,30 @@ def main() -> int:
              "tied for the recommendation (default: 0.02 = 2%%)",
     )
     parser.add_argument(
-        "--data-path", type=str,
-        default="examples/linearity/18734/18734_164220.npz",
-        help="Path to the lab NPZ ramp",
+        "--data-path", type=str, default=None,
+        help="Path to a lab NPZ ramp; if omitted, a synthetic 4096x4096x30 "
+             "ramp is generated",
     )
     args = parser.parse_args()
 
-    dataPath = Path(args.data_path)
-    if not dataPath.exists():
-        print(
-            f"Data file missing: {dataPath}\n"
-            "Place the lab NPZ at that path (see .gitignore)."
-        )
-        return 1
-
-    print(f"Loading {dataPath} ...", flush=True)
-    ramp, photodiode = loadNpz(dataPath)
-    scale = (photodiode[0] / photodiode).astype(np.float32)
-    deltas = np.empty_like(ramp.reads)
-    deltas[0] = ramp.reads[0]
-    deltas[1:] = np.diff(ramp.reads, axis=0)
-    correctedReads = np.cumsum(deltas * scale[:, None, None], axis=0)
-    correctedRamp = Ramp(reads=correctedReads)
+    if args.data_path is None:
+        print("No --data-path provided; generating synthetic ramp ...", flush=True)
+        correctedRamp = _syntheticRamp()
+    else:
+        dataPath = Path(args.data_path)
+        if not dataPath.exists():
+            print(f"Data file missing: {dataPath}")
+            return 1
+        print(f"Loading {dataPath} ...", flush=True)
+        ramp, photodiode = loadNpz(dataPath)
+        scale = (photodiode[0] / photodiode).astype(np.float32)
+        deltas = np.empty_like(ramp.reads)
+        deltas[0] = ramp.reads[0]
+        deltas[1:] = np.diff(ramp.reads, axis=0)
+        correctedReads = np.cumsum(deltas * scale[:, None, None], axis=0)
+        correctedRamp = Ramp(reads=correctedReads)
     print(
-        f"  shape={correctedReads.shape} dtype={correctedReads.dtype}",
+        f"  shape={correctedRamp.reads.shape} dtype={correctedRamp.reads.dtype}",
         flush=True,
     )
     print(
