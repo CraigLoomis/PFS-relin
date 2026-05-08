@@ -21,22 +21,24 @@ def _buildSyntheticReads(
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Construct ``(reads, trueCoeffs)`` such that for each pixel::
 
-        t[n] = rate * (n + 1)                 # the linearization target
+        t[n] = rate * n                       # the linearization target
         t[n] = c0 + c1*m[n] + c2*m[n]^2
                + c3*m[n]^3 + c4*m[n]^4        # the per-pixel nonlinearity
         m[n] = reads[n, h, w]                 # cumulative flux at read n
 
-    Strategy: choose ``m[n]`` by inverting the polynomial for the given ``t[n]``
-    values (numerically via Newton's method — picking the physically sensible
-    real root in range).
+    Read 0 is the implicit zero read (m[0] = 0, t[0] = 0); reads 1..N-1
+    are solved by inverting the polynomial for t[n] = rate * n via
+    Newton's method.
     """
-    # Target at each read, same for all pixels
-    t = rate * np.arange(1, N + 1, dtype=np.float64)  # (N,)
+    # Target at each read (including implicit zero read at n=0).
+    t = rate * np.arange(N, dtype=np.float64)  # (N,)
 
     # Solve t[n] = c0 + c1 m + c2 m^2 + c3 m^3 + c4 m^4 for each pixel & read
-    # via Newton's method, starting from m ≈ (t - c0) / c1.
+    # via Newton's method, starting from m ≈ (t - c0) / c1. The n=0 row is
+    # the implicit zero read.
     m = np.empty((N, H, W), dtype=np.float64)
-    for n in range(N):
+    m[0] = 0.0
+    for n in range(1, N):
         mGuess = (t[n] - c0) / np.where(c1 != 0, c1, 1.0)
         for _ in range(50):
             pVal = c0 + c1 * mGuess + c2 * mGuess**2 + c3 * mGuess**3 + c4 * mGuess**4
@@ -62,13 +64,14 @@ def _buildSyntheticReads(
 
 @pytest.fixture
 def smallSyntheticRamp():
-    """A 29-read 4x5 ramp with spatially-varying polynomial coefficients.
+    """A 30-read 4x5 ramp with spatially-varying polynomial coefficients.
 
-    The target rate ``R`` is chosen so that ``reads[0] == R`` by
-    construction (all pixels' first reads equal the rate).
+    Read 0 is the implicit zero read (``reads[0] == 0``); reads 1..29
+    follow the per-pixel polynomial inverse of the linear target
+    ``t[n] = rate * n``.
     """
     rng = np.random.default_rng(seed=42)
-    H, W, N = 4, 5, 29
+    H, W, N = 4, 5, 30
     rate = 1000.0  # DN per read
 
     # Per-pixel polynomial coefficients: mostly-linear with small higher-order terms.
@@ -84,20 +87,20 @@ def smallSyntheticRamp():
 
 @pytest.fixture
 def tinyLinearRamp():
-    """A 6-read 2x3 ramp where every pixel is perfectly linear: t = m * pixelScale.
+    """A 7-read 2x3 ramp where every pixel is perfectly linear: t = m * pixelScale.
 
-    Each pixel's per-read increment is constant, so cumulative flux grows
-    linearly: ``reads[n] == pixelScale * rate * (n + 1)``.
+    Read 0 is the implicit zero read; reads 1..6 grow linearly:
+    ``reads[n] == pixelScale * rate * n``.
     """
-    H, W, N = 2, 3, 6
+    H, W, N = 2, 3, 7
     rate = 500.0
     # Pixel-scale factor — varies per pixel so the PRNU is non-trivial
     pixelScale = np.array(
         [[1.0, 1.1, 0.9], [0.95, 1.05, 1.0]], dtype=np.float32
     )
     perRead = rate * pixelScale  # constant increment per read
-    reads = perRead[None, :, :] * np.arange(1, N + 1, dtype=np.float32)[:, None, None]
-    target = rate * np.arange(1, N + 1, dtype=np.float32)
+    reads = perRead[None, :, :] * np.arange(N, dtype=np.float32)[:, None, None]
+    target = rate * np.arange(N, dtype=np.float32)
     return Ramp(reads=reads.astype(np.float32)), {
         "pixelScale": pixelScale,
         "targetRate": rate,

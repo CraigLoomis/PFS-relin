@@ -17,8 +17,10 @@ def test_loadNpzReturnsRampAndPhotodiode(tmp_path):
 
     ramp, pdio = loadNpz(path)
     assert isinstance(ramp, Ramp)
-    # Loader converts on-disk deltas to cumulative reads.
-    np.testing.assert_array_equal(ramp.reads, np.cumsum(deltas, axis=0))
+    # Loader prepends an implicit read0 = 0 and accumulates the on-disk deltas.
+    assert ramp.reads.shape == (N + 1, H, W)
+    np.testing.assert_array_equal(ramp.reads[0], 0)
+    np.testing.assert_array_equal(ramp.reads[1:], np.cumsum(deltas, axis=0))
     assert ramp.validMask is None
     np.testing.assert_array_equal(pdio, photodiode)
 

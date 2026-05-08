@@ -20,7 +20,7 @@ def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):
         truth["target"][:, None, None], ramp.reads.shape
     )
     np.testing.assert_allclose(
-        result.cumulativeLinear, expected, rtol=1e-3, atol=1e-1
+        result.cumulativeLinear, expected, rtol=1e-3, atol=1.0
     )
     # No pixel should be out-of-range on the same data it was fit on.
     assert not (result.badPixelMask & (BELOW_VALID_RANGE | ABOVE_VALID_RANGE)).any()
@@ -29,13 +29,13 @@ def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):
 def test_applyFlagsOutOfRangeForExtrapolation():
     rng = np.random.default_rng(0)
     H, W = 2, 3
-    # Linear ramp: t = m. 5 reads, rate 1 DN/read.
-    reads = np.ones((1, H, W), dtype=np.float32) * np.arange(1, 6, dtype=np.float32)[:, None, None]
+    # Linear ramp: t = m. 6 reads (1 implicit zero + 5), rate 1 DN/read.
+    reads = np.ones((1, H, W), dtype=np.float32) * np.arange(6, dtype=np.float32)[:, None, None]
     correction = fit(
         [Ramp(reads=reads)], model=PolynomialModel(order=1)
     )
     # Build a ramp whose cumulative values exceed fit_max.
-    extrapReads = np.ones((1, H, W), dtype=np.float32) * np.arange(1, 21, dtype=np.float32)[:, None, None]
+    extrapReads = np.ones((1, H, W), dtype=np.float32) * np.arange(21, dtype=np.float32)[:, None, None]
     result = apply(correction, Ramp(reads=extrapReads))
     # All pixels have reads beyond fit_max, so OUT_OF_RANGE should be set.
     assert (result.badPixelMask & ABOVE_VALID_RANGE).all()

@@ -13,16 +13,30 @@ from ..types import FIT_FAILED, INSUFFICIENT_POINTS, NON_MONOTONIC
 
 @dataclass(frozen=True)
 class PolynomialModel:
-    """Pluggable Chebyshev polynomial-fit model. Default 4th order."""
+    """Pluggable Chebyshev polynomial-fit model. Default 4th order.
+
+    ``fitMinMargin`` (default 100 DN) lowers the per-pixel ``fitMin`` by
+    an absolute DN amount so that apply() does not flag BELOW_VALID_RANGE
+    for read noise, kTC, or modest bias-level offsets that push slightly
+    below the measured range. Sized by detector physics (noise & bias),
+    not signal level. The polynomial near read 0 is locally linear
+    (anchored by the implicit zero read), so extrapolating through this
+    margin remains accurate.
+    """
 
     order: int = 4
     modelName: str = "CHEBYSHEV"
+    fitMinMargin: float = 100.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.order, int) or isinstance(self.order, bool):
             raise ValueError(f"order must be an int, got {type(self.order).__name__}")
         if self.order < 1:
             raise ValueError(f"order must be >= 1, got {self.order}")
+        if self.fitMinMargin < 0:
+            raise ValueError(
+                f"fitMinMargin must be >= 0, got {self.fitMinMargin}"
+            )
 
     def evaluate(self, coefficients: np.ndarray, x: np.ndarray) -> np.ndarray:
         """Evaluate the per-pixel Chebyshev series via Clenshaw's algorithm.
@@ -152,6 +166,14 @@ class PolynomialModel:
             fitMax = np.nanmax(mMasked, axis=0)
         fitMin = np.where(np.isnan(fitMin), 0.0, fitMin)
         fitMax = np.where(np.isnan(fitMax), 0.0, fitMax)
+        # Extend fitMin downward by an absolute DN margin so apply()
+        # does not flag noise / bad bias-level offsets below the
+        # measured range. The size of the margin is driven by detector
+        # physics (read noise, kTC, bias variation), not signal level.
+        # The polynomial near read 0 (anchored by the implicit zero
+        # read) is locally linear, so extrapolating through this margin
+        # stays accurate.
+        fitMin = fitMin - self.fitMinMargin
 
         # Affine map m → x ∈ [-1, 1]: x = 2*(m - fitMin)/(fitMax - fitMin) - 1
         denom = fitMax - fitMin

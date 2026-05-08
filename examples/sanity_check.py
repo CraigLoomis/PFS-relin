@@ -59,7 +59,7 @@ def _plotDiagnostic(
 
     H, W = badPixelMask.shape
     N = rawCum.shape[0]
-    reads = np.arange(1, N + 1)
+    reads = np.arange(N)
 
     fig = plt.figure(figsize=(16, 15), layout="constrained")
     gs = fig.add_gridspec(3, 2, hspace=0.1)
@@ -87,18 +87,19 @@ def _plotDiagnostic(
         fMin, fMax = fitMin[r, c], fitMax[r, c]
         inRange = (mTrace >= fMin) & (mTrace <= fMax)
 
-        rawDelta = np.diff(mTrace, prepend=0.0)
-        rawDelta[0] = mTrace[0]
-        linDelta = np.diff(tTrace, prepend=0.0)
-        linDelta[0] = tTrace[0]
+        # Deltas: skip read 0 (implicit zero); deltas[i] is read i+1 minus i.
+        rawDelta = np.diff(mTrace)
+        linDelta = np.diff(tTrace)
+        deltaReads = reads[1:]
+        deltaInRange = inRange[1:]
 
         for seg, color in _segments(reads, mTrace, inRange, "C0", "red"):
             axRawCum.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
         for seg, color in _segments(reads, tTrace, inRange, "C1", "red"):
             axLinCum.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
-        for seg, color in _segments(reads, rawDelta, inRange, "C0", "red"):
+        for seg, color in _segments(deltaReads, rawDelta, deltaInRange, "C0", "red"):
             axRawDelta.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
-        for seg, color in _segments(reads, linDelta, inRange, "C1", "red"):
+        for seg, color in _segments(deltaReads, linDelta, deltaInRange, "C1", "red"):
             axLinDelta.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
 
     idealCum = rate * reads
@@ -360,10 +361,10 @@ def _loadInputRamp(dataDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
             f"  photodiode scale range: min={scale.min():.6f} max={scale.max():.6f}",
             flush=True,
         )
-        deltas = np.empty_like(ramp.reads)
-        deltas[0] = ramp.reads[0]
-        deltas[1:] = np.diff(ramp.reads, axis=0)
-        correctedReads = np.cumsum(deltas * scale[:, None, None], axis=0)
+        deltas = np.diff(ramp.reads, axis=0)  # (N, H, W)
+        correctedReads = np.empty_like(ramp.reads)
+        correctedReads[0] = 0.0
+        np.cumsum(deltas * scale[:, None, None], axis=0, out=correctedReads[1:])
 
     correctedRamp = Ramp(reads=correctedReads)
     _t("photodiode correction applied" if not noPhotodiode else "photodiode correction skipped", t1)
@@ -590,7 +591,7 @@ def main() -> None:
             badPixelMask=loaded.badPixelMask,
             rows=rows,
             cols=cols,
-            rate=float(np.median(correctedRamp.reads[0])),
+            rate=float(np.median(correctedRamp.reads[2] - correctedRamp.reads[1])),
             outPath=outDir / f"diagnostic.{args.plot_format}",
             nPlot=args.nplot,
             order=order,

@@ -20,9 +20,9 @@ def test_fitSingleRampRecoversTarget(smallSyntheticRamp):
     denom = np.where(denom > 0, denom, 1.0)
     x = 2.0 * (m - correction.fitMin[None]) / denom[None] - 1.0
     tPred = correction.model.evaluate(correction.coefficients, x)
-    fitRate = float(np.median(ramp.reads[0]))
+    fitRate = float(np.median(ramp.reads[2] - ramp.reads[1]))
     N = ramp.reads.shape[0]
-    expected = fitRate * np.arange(1, N + 1, dtype=np.float32)
+    expected = fitRate * np.arange(N, dtype=np.float32)
     expectedBroad = np.broadcast_to(expected[:, None, None], tPred.shape)
     np.testing.assert_allclose(tPred, expectedBroad, rtol=1e-3, atol=1.0)
     # Summary should carry percentiles.
@@ -54,12 +54,13 @@ def test_fitMultipleRampsConcatenates():
     """Two ramps of different lengths combine per-pixel."""
     H, W = 3, 4
     # Pixel-linear: t = m for every pixel.
-    # Ramp 1: 8 reads, rate 100.
-    # Ramp 2: 12 reads, rate 200.
+    # Ramp 1: 9 reads (1 implicit zero + 8), rate 100.
+    # Ramp 2: 13 reads (1 implicit zero + 12), rate 200.
     rate1 = 100.0
     rate2 = 200.0
-    reads1 = np.full((1, H, W), rate1, dtype=np.float32) * np.arange(1, 9, dtype=np.float32)[:, None, None]
-    reads2 = np.full((1, H, W), rate2, dtype=np.float32) * np.arange(1, 13, dtype=np.float32)[:, None, None]
+    N1, N2 = 9, 13
+    reads1 = np.full((1, H, W), rate1, dtype=np.float32) * np.arange(N1, dtype=np.float32)[:, None, None]
+    reads2 = np.full((1, H, W), rate2, dtype=np.float32) * np.arange(N2, dtype=np.float32)[:, None, None]
     correction = fit(
         [Ramp(reads=reads1), Ramp(reads=reads2)],
         model=PolynomialModel(order=2),
@@ -70,12 +71,12 @@ def test_fitMultipleRampsConcatenates():
     denom = np.where(denom > 0, denom, 1.0)
     x1 = 2.0 * (m1 - correction.fitMin[None]) / denom[None] - 1.0
     tPred = correction.model.evaluate(correction.coefficients, x1)
-    # Target for ramp1: rate1 * (n+1)
-    expected1 = rate1 * np.arange(1, 9, dtype=np.float32)
+    # Target for ramp1: rate1 * n (with target[0] = 0).
+    expected1 = rate1 * np.arange(N1, dtype=np.float32)
     expected1Broad = np.broadcast_to(expected1[:, None, None], tPred.shape)
     np.testing.assert_allclose(tPred, expected1Broad, rtol=1e-4, atol=1e-2)
-    # nPointsUsed should be 8 + 12 = 20 everywhere.
-    assert (correction.diagnostics.nPointsUsed == 20).all()
+    # nPointsUsed should be N1 + N2 everywhere.
+    assert (correction.diagnostics.nPointsUsed == N1 + N2).all()
 
 
 def test_fitEmptyRampListRaises():

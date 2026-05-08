@@ -50,10 +50,10 @@ def main() -> int:
         print(f"Loading {dataPath} ...", flush=True)
         ramp, photodiode = loadNpz(dataPath)
         scale = (photodiode[0] / photodiode).astype(np.float32)
-        deltas = np.empty_like(ramp.reads)
-        deltas[0] = ramp.reads[0]
-        deltas[1:] = np.diff(ramp.reads, axis=0)
-        correctedReads = np.cumsum(deltas * scale[:, None, None], axis=0)
+        deltas = np.diff(ramp.reads, axis=0)
+        correctedReads = np.empty_like(ramp.reads)
+        correctedReads[0] = 0.0
+        np.cumsum(deltas * scale[:, None, None], axis=0, out=correctedReads[1:])
         correctedRamp = Ramp(reads=correctedReads)
     print(
         f"  shape={correctedRamp.reads.shape} dtype={correctedRamp.reads.dtype}",

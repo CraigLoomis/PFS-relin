@@ -21,15 +21,15 @@ def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
     # Apply loaded correction to the original ramp.
     result = nirLinearity.apply(loaded, ramp)
 
-    # The fit infers its own target rate R = median(reads[0]); for a fixture
-    # whose pixels solve polynomial(m[n]) = rateTrue * (n+1), the fit recovers
-    # a SCALED polynomial so that polynomial_fit(m[n]) = R * (n+1) — i.e. the
-    # correction's output trajectory is R * (n+1), which generally differs
-    # from the fixture's truth["target"] by a small scale factor. Compare
-    # against the fit's self-inferred target grid, not the fixture's truth.
-    fitRate = float(np.median(ramp.reads[0]))
+    # The fit infers its own target rate R = median(reads[2] - reads[1]); for
+    # a fixture whose pixels solve polynomial(m[n]) = rateTrue * n, the fit
+    # recovers a SCALED polynomial so that polynomial_fit(m[n]) = R * n —
+    # i.e. the correction's output trajectory is R * n, which generally
+    # differs from the fixture's truth["target"] by a small scale factor.
+    # Compare against the fit's self-inferred target grid, not the truth.
+    fitRate = float(np.median(ramp.reads[2] - ramp.reads[1]))
     N = ramp.reads.shape[0]
-    expectedCurve = fitRate * np.arange(1, N + 1, dtype=np.float32)
+    expectedCurve = fitRate * np.arange(N, dtype=np.float32)
     expected = np.broadcast_to(
         expectedCurve[:, None, None], ramp.reads.shape
     )
