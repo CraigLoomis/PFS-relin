@@ -47,8 +47,6 @@ def _plotDiagnostic(
     nRefReads: int = 5,
     saturationLevel: float | None = None,
     seed: int = 0,
-    brightFraction: float = 0.5,
-    darkFraction: float = -0.05,
     detector: str = "",
     visit: str = "",
 ) -> None:
@@ -56,20 +54,23 @@ def _plotDiagnostic(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     H, W = badPixelMask.shape
     N = rawCum.shape[0]
     reads = np.arange(N)
 
-    fig = plt.figure(figsize=(16, 15), layout="constrained")
-    gs = fig.add_gridspec(3, 2, hspace=0.1)
-    # Rows 1-2 share x; row 3 is independent.
+    fig = plt.figure(figsize=(16, 20), layout="constrained")
+    gs = fig.add_gridspec(4, 2, hspace=0.1)
+    # Rows 1-3 share x; row 4 (rejected/good-pop) is independent.
     axRawCum = fig.add_subplot(gs[0, 0])
     axLinCum = fig.add_subplot(gs[0, 1], sharex=axRawCum)
     axRawDelta = fig.add_subplot(gs[1, 0], sharex=axRawCum)
     axLinDelta = fig.add_subplot(gs[1, 1], sharex=axRawCum)
-    axRejCum = fig.add_subplot(gs[2, 0])
-    axRejBar = fig.add_subplot(gs[2, 1])
+    axGoodPopRaw = fig.add_subplot(gs[2, 0], sharex=axRawCum)
+    axGoodPopLin = fig.add_subplot(gs[2, 1], sharex=axRawCum)
+    axRejCum = fig.add_subplot(gs[3, 0])
+    axRejBar = fig.add_subplot(gs[3, 1])
 
     # --- Rows 1-2: good-pixel before/after ---
     isGood = badPixelMask[rows, cols] == 0
@@ -124,100 +125,250 @@ def _plotDiagnostic(
 
     # --- Row 3 left: rejected pixel traces ---
     good = badPixelMask == 0
+    notBorder = (badPixelMask & BORDER_PIX) == 0
+    rngRej = np.random.default_rng(seed)
+
+    # Median good-pixel trace + its initial rate (reference for "hot" threshold).
+    # Use first 3 deltas — short enough to catch hot pixels before they saturate.
+    nHotRef = min(3, rawCum.shape[0] - 1)
+    medianTrace = None
+    goodInitRate = 0.0
     if good.any():
         goodIdx = np.flatnonzero(good.ravel())
         rngGood = np.random.default_rng(seed)
         gSample = rngGood.choice(goodIdx, size=min(10000, len(goodIdx)), replace=False)
         gRows, gCols = gSample // W, gSample % W
         medianTrace = np.median(rawCum[:, gRows, gCols], axis=1)
-    else:
-        medianTrace = None
-
-    notBorder = (badPixelMask & BORDER_PIX) == 0
-    rngRej = np.random.default_rng(seed)
-
+        if nHotRef > 0:
+            goodInitRate = float(np.median(np.diff(medianTrace[:nHotRef + 1])))
     medMax = float(medianTrace[-1]) if medianTrace is not None else 0.0
-    brightThresh = brightFraction * medMax
-    darkThresh = darkFraction * medMax
 
-    # Non-monotonic
+    # Candidate set: every non-good, non-border pixel.
+    rejMask = ~good & notBorder
+    rejIdx = np.flatnonzero(rejMask.ravel())
+    nRej = len(rejIdx)
+
+    # Precompute per-pixel peak, initial rate, and RMS distance from median good.
+    if nRej > 0:
+        rejR = rejIdx // W
+        rejC = rejIdx % W
+        rejTraces = rawCum[:, rejR, rejC].astype(np.float64, copy=False)  # (N, nRej)
+        rejPeak = rejTraces.max(axis=0)
+        if nHotRef > 0:
+            rejInitRate = np.median(np.diff(rejTraces[:nHotRef + 1], axis=0), axis=0)
+        else:
+            rejInitRate = np.zeros(nRej)
+        if medianTrace is not None:
+            rejDist = np.sqrt(((rejTraces - medianTrace[:, None]) ** 2).mean(axis=0))
+        else:
+            rejDist = np.full(nRej, np.inf)
+    else:
+        rejTraces = np.empty((rawCum.shape[0], 0), dtype=np.float64)
+        rejPeak = np.array([])
+        rejInitRate = np.array([])
+        rejDist = np.array([])
+
+    # Per-category plot specs: (label, color, alpha, linewidth, selectionIntoRej, foundCount)
+    categoryPlot: list[tuple[str, str, float, float, np.ndarray, int]] = []
+
+    # (a) Random sample of all rejected — background context.
+    if nRej > 0:
+        if nRej > nPlot:
+            bgSel = rngRej.choice(nRej, size=nPlot, replace=False)
+        else:
+            bgSel = np.arange(nRej)
+        categoryPlot.append((
+            "all rejected (random sample)", "0.5", 0.12, 0.4, bgSel, nRej,
+        ))
+
+    # (b) Closest to the median good pixel — top 200 by smallest RMS distance.
+    closestN = 200
+    if nRej > 0 and medianTrace is not None and np.isfinite(rejDist).any():
+        K = min(closestN, nRej)
+        partIdx = np.argpartition(rejDist, K - 1)[:K]
+        closeSel = partIdx[np.argsort(rejDist[partIdx])]
+    else:
+        closeSel = np.array([], dtype=int)
+    categoryPlot.append((
+        f"closest to median good (top {closestN} by RMS distance)",
+        "C2", 0.15, 0.8, closeSel, len(closeSel),
+    ))
+
+    # (c) Dead — peak signal < 10% of median good endpoint.
+    deadThresh = 0.1 * medMax
+    deadSel = np.flatnonzero(rejPeak < deadThresh)
+    nDead = len(deadSel)
+    if nDead > nPlot:
+        deadSel = rngRej.choice(deadSel, size=nPlot, replace=False)
+    categoryPlot.append((
+        f"dead (peak < {deadThresh:,.0f} DN, 10% of good endpoint {medMax:,.0f})",
+        "C4", 0.12, 0.4, deadSel, nDead,
+    ))
+
+    # (d) Hot — initial rate over the first nHotRef deltas > 2× good initial rate.
+    hotThresh = 2.0 * goodInitRate
+    hotSel = np.flatnonzero(rejInitRate > hotThresh)
+    nHot = len(hotSel)
+    if nHot > nPlot:
+        hotSel = rngRej.choice(hotSel, size=nPlot, replace=False)
+    categoryPlot.append((
+        f"hot (first-{nHotRef} rate > {hotThresh:,.0f} DN/read, 2× good {goodInitRate:,.0f})",
+        "C3", 0.5, 1.0, hotSel, nHot,
+    ))
+
+    # (e) NON_MONOTONIC — only if any qualifying pixels exist.
     nmMask = ((badPixelMask & NON_MONOTONIC) != 0) & notBorder
-    nmIdx = np.flatnonzero(nmMask.ravel())
-    nNM = len(nmIdx)
-    if nNM > nPlot:
-        nmIdx = rngRej.choice(nmIdx, size=nPlot, replace=False)
-    nmRows, nmCols = nmIdx // W, nmIdx % W
+    if nmMask.any():
+        nmGlobal = np.flatnonzero(nmMask.ravel())
+        nNM = len(nmGlobal)
+        # NM pixels are a subset of rejIdx — map global → position in rejIdx.
+        nmInRej = np.searchsorted(rejIdx, nmGlobal)
+        if nNM > nPlot:
+            nmInRej = rngRej.choice(nmInRej, size=nPlot, replace=False)
+        categoryPlot.append((
+            "NON_MONOTONIC", "magenta", 0.6, 1.2, nmInRej, nNM,
+        ))
 
-    # Bright insufficient-points
-    ipMask = ((badPixelMask & INSUFFICIENT_POINTS) != 0) & notBorder
-    ipIdx = np.flatnonzero(ipMask.ravel())
-    if len(ipIdx) > 0:
-        ipR, ipC = ipIdx // W, ipIdx % W
-        ipTraces = rawCum[:, ipR, ipC]
-        keep = (ipTraces.max(axis=0) > brightThresh) | (ipTraces.min(axis=0) < darkThresh)
-        ipIdx = ipIdx[keep]
-        if len(ipIdx) > nPlot:
-            ipIdx = rngRej.choice(ipIdx, size=nPlot, replace=False)
-    ipRows, ipCols = (ipIdx // W, ipIdx % W) if len(ipIdx) > 0 else (np.array([], int), np.array([], int))
-
-    # Other failed
-    failFlags = INSUFFICIENT_POINTS | FIT_FAILED | NON_MONOTONIC
-    otherMask = ((badPixelMask & failFlags) != 0) & notBorder & ~nmMask
-    otherIdx = np.flatnonzero(otherMask.ravel())
-    otherIdx = np.setdiff1d(otherIdx, ipIdx)
-    if len(otherIdx) > nPlot:
-        otherIdx = rngRej.choice(otherIdx, size=nPlot, replace=False)
-    otherRows, otherCols = (otherIdx // W, otherIdx % W) if len(otherIdx) > 0 else (np.array([], int), np.array([], int))
-
-    totalPlotted = len(nmRows) + len(ipRows) + len(otherRows)
-    if totalPlotted == 0:
-        axRejCum.text(0.5, 0.5, "No failed pixels", transform=axRejCum.transAxes,
+    # --- Plot, in list order so emphasized categories overlay the background. ---
+    totalPlotted = sum(len(c[4]) for c in categoryPlot)
+    if totalPlotted == 0 and medianTrace is None:
+        axRejCum.text(0.5, 0.5, "No rejected pixels", transform=axRejCum.transAxes,
                       ha="center", va="center", fontsize=14)
     else:
-        for k in range(len(otherRows)):
-            trace = rawCum[:, otherRows[k], otherCols[k]]
-            lbl = "other failed" if k == 0 else None
-            axRejCum.plot(reads, trace, color="C7", alpha=0.1, linewidth=0.4, label=lbl)
-        for k in range(len(ipRows)):
-            trace = rawCum[:, ipRows[k], ipCols[k]]
-            lbl = f"INSUFF_PTS (max>{brightFraction:.0%} or all<{darkFraction:.0%} of median, N={len(ipRows)})" if k == 0 else None
-            axRejCum.plot(reads, trace, color="C3", alpha=0.08, linewidth=0.5, label=lbl)
-        for k in range(len(nmRows)):
-            trace = rawCum[:, nmRows[k], nmCols[k]]
-            lbl = f"NON_MONOTONIC (N={nNM})" if k == 0 else None
-            axRejCum.plot(reads, trace, color="C0", alpha=0.3, linewidth=1.2, label=lbl)
+        for _label, color, alpha, lw, sel, _total in categoryPlot:
+            for k in sel:
+                axRejCum.plot(reads, rejTraces[:, k], color=color, alpha=alpha, linewidth=lw)
 
     if medianTrace is not None:
-        axRejCum.plot(reads, medianTrace, "k-", linewidth=1.5, label="median good pixel")
-    axRejCum.legend(loc="upper left")
+        axRejCum.plot(reads, medianTrace, "k-", linewidth=1.5)
+
+    # Legend with proxy handles so swatches are visible at full saturation.
+    legendHandles = []
+    for label, color, _alpha, _lw, sel, total in categoryPlot:
+        legendHandles.append(Line2D(
+            [0], [0], color=color, linewidth=2.0,
+            label=f"{label}: plotted {len(sel):,} / found {total:,}",
+        ))
+    if medianTrace is not None:
+        legendHandles.append(Line2D(
+            [0], [0], color="k", linewidth=1.5, label="median good pixel",
+        ))
+    axRejCum.legend(handles=legendHandles, loc="upper left", framealpha=0.9, fontsize=8)
     axRejCum.set_xlabel("Read number")
     axRejCum.set_ylabel("Cumulative DN")
-    axRejCum.set_title(f"Rejected pixel traces (N={totalPlotted})")
+    axRejCum.set_title(f"Rejected pixel traces — plotted {totalPlotted:,} of {nRej:,} rejected")
     axRejCum.grid(True, alpha=0.3)
 
-    # --- Row 3 right: rejection bar chart ---
-    totalPixels = H * W
-    categories = [
-        ("BORDER_PIX", (badPixelMask & BORDER_PIX > 0).sum(), "C7"),
-        ("MASKED_BY_INPUT", (badPixelMask & MASKED_BY_INPUT > 0).sum(), "C8"),
-        ("INSUFF_PTS", (badPixelMask & INSUFFICIENT_POINTS > 0).sum(), "C3"),
-        ("FIT_FAILED", (badPixelMask & FIT_FAILED > 0).sum(), "C1"),
-        ("NON_MONOTONIC", (badPixelMask & NON_MONOTONIC > 0).sum(), "C0"),
-    ]
-    labels = [c[0] for c in categories]
-    counts = [int(c[1]) for c in categories]
-    colors = [c[2] for c in categories]
+    # --- Row 3 right: non-rejected (good) pixel populations — raw traces. ---
+    goodCategoryPlot: list[tuple[str, str, float, float, np.ndarray, np.ndarray, int]] = []
 
-    bars = axRejBar.bar(labels, counts, color=colors)
-    axRejBar.set_ylabel("Pixel count")
-    axRejBar.set_title("Rejection categories")
-    axRejBar.tick_params(axis="x", rotation=30)
-    for bar, count in zip(bars, counts):
-        pct = 100.0 * count / totalPixels
-        axRejBar.text(
-            bar.get_x() + bar.get_width() / 2, bar.get_height(),
-            f"{count:,}\n({pct:.2f}%)", ha="center", va="bottom", fontsize=8,
-        )
+    if good.any():
+        nGood = int(good.sum())
+        endpoints = rawCum[-1]  # (H, W) view of final cumulative read
+        if nHotRef > 0:
+            firstRate = (rawCum[nHotRef] - rawCum[0]) / nHotRef  # (H, W)
+        else:
+            firstRate = np.zeros_like(endpoints)
+
+        # (a) Faint — good with endpoint < 50% of median good endpoint.
+        faintThresh = 0.5 * medMax
+        faintFlat = np.flatnonzero((good & (endpoints < faintThresh)).ravel())
+        nFaint = len(faintFlat)
+        if nFaint > nPlot:
+            faintFlat = rngRej.choice(faintFlat, size=nPlot, replace=False)
+        goodCategoryPlot.append((
+            f"faint (endpoint < {faintThresh:,.0f} DN, 50% of median {medMax:,.0f})",
+            "C0", 0.04, 0.4, faintFlat // W, faintFlat % W, nFaint,
+        ))
+
+        # (c) Bright — good with endpoint > 150% of median good endpoint.
+        brightThresh = 1.5 * medMax
+        brightFlat = np.flatnonzero((good & (endpoints > brightThresh)).ravel())
+        nBright = len(brightFlat)
+        if nBright > nPlot:
+            brightFlat = rngRej.choice(brightFlat, size=nPlot, replace=False)
+        goodCategoryPlot.append((
+            f"bright (endpoint > {brightThresh:,.0f} DN, 150% of median {medMax:,.0f})",
+            "C1", 0.4, 0.8, brightFlat // W, brightFlat % W, nBright,
+        ))
+
+        # (d) Hot — good with first-nHotRef rate > 1.5× the median good initial rate.
+        hotGoodThresh = 1.5 * goodInitRate
+        hotFlat = np.flatnonzero((good & (firstRate > hotGoodThresh)).ravel())
+        nHotGood = len(hotFlat)
+        if nHotGood > nPlot:
+            hotFlat = rngRej.choice(hotFlat, size=nPlot, replace=False)
+        goodCategoryPlot.append((
+            f"hot (first-{nHotRef} rate > {hotGoodThresh:,.0f} DN/read, 1.5× median {goodInitRate:,.0f})",
+            "C2", 0.15, 0.8, hotFlat // W, hotFlat % W, nHotGood,
+        ))
+
+    totalGoodPlotted = sum(len(c[4]) for c in goodCategoryPlot)
+    if totalGoodPlotted == 0 and medianTrace is None:
+        axRejBar.text(0.5, 0.5, "No good pixels", transform=axRejBar.transAxes,
+                      ha="center", va="center", fontsize=14)
+    else:
+        for _label, color, alpha, lw, rrows, rcols, _total in goodCategoryPlot:
+            if len(rrows) == 0:
+                continue
+            sub = rawCum[:, rrows, rcols]  # (N, k)
+            axRejBar.plot(reads, sub, color=color, alpha=alpha, linewidth=lw)
+
+    if medianTrace is not None:
+        axRejBar.plot(reads, medianTrace, "k-", linewidth=1.5)
+
+    legendHandles2 = []
+    for label, color, _alpha, _lw, rrows, _rcols, total in goodCategoryPlot:
+        legendHandles2.append(Line2D(
+            [0], [0], color=color, linewidth=2.0,
+            label=f"{label}: plotted {len(rrows):,} / found {total:,}",
+        ))
+    if medianTrace is not None:
+        legendHandles2.append(Line2D(
+            [0], [0], color="k", linewidth=1.5, label="median good pixel",
+        ))
+    axRejBar.legend(handles=legendHandles2, loc="upper left", framealpha=0.9, fontsize=8)
+    axRejBar.set_xlabel("Read number")
+    axRejBar.set_ylabel("Cumulative DN")
+    nGoodTotal = int(good.sum())
+    axRejBar.set_title(f"Good pixel traces — plotted {totalGoodPlotted:,} of {nGoodTotal:,} good")
+    axRejBar.grid(True, alpha=0.3)
+
+    # --- Row 3: same good-population pixels, plotted in row-1 ("accumulated flux") style. ---
+    # Combine all good-population pixels (faint+bright+hot) and render each pixel
+    # exactly like row 1: in-range segments in C0/C1, out-of-range in red.
+    popRows: list[np.ndarray] = []
+    popCols: list[np.ndarray] = []
+    for _label, _color, _alpha, _lw, rrows, rcols, _total in goodCategoryPlot:
+        if len(rrows) > 0:
+            popRows.append(np.asarray(rrows))
+            popCols.append(np.asarray(rcols))
+    if popRows:
+        popR = np.concatenate(popRows)
+        popC = np.concatenate(popCols)
+    else:
+        popR = np.array([], dtype=int)
+        popC = np.array([], dtype=int)
+
+    for r, c in zip(popR, popC):
+        mTrace = rawCum[:, r, c]
+        tTrace = linCum[:, r, c]
+        fMin, fMax = fitMin[r, c], fitMax[r, c]
+        inRange = (mTrace >= fMin) & (mTrace <= fMax)
+        for seg, color in _segments(reads, mTrace, inRange, "C0", "red"):
+            axGoodPopRaw.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+        for seg, color in _segments(reads, tTrace, inRange, "C1", "red"):
+            axGoodPopLin.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+
+    for ax in (axGoodPopRaw, axGoodPopLin):
+        ax.plot(reads, idealCum, "k--", linewidth=1, label=f"ideal (rate={rate:.1f} DN/read)")
+        ax.legend(loc="upper left")
+        ax.set_ylim(0, rate * N * 1.3)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylabel("Cumulative DN")
+        ax.set_xlabel("Read number")
+    axGoodPopRaw.set_title(f"Uncorrected — accumulated flux ({len(popR)} good-population pixels)")
+    axGoodPopLin.set_title(f"Linearized — accumulated flux ({len(popR)} good-population pixels)")
 
     titleParts = []
     if detector:
@@ -271,56 +422,153 @@ def _segments(
 
 
 def _plotFitRange(
-    fitMin: np.ndarray,
     fitMax: np.ndarray,
     badPixelMask: np.ndarray,
+    rawCum: np.ndarray,
     outPath: Path,
+    loOverride: float | None = None,
+    hiOverride: float | None = None,
 ) -> None:
-    """Plot 3: distributions of fitMin and fitMax, highlighting failed pixels."""
+    """Plot 3: stacked histograms — good-pixel fitMax (top, with per-detector
+    range overrides) and rejected-pixel raw cumulative max (bottom, anchored at
+    zero so the floor is visible). Pixels outside each range appear in single
+    overflow columns at the edges.
+
+    fitMax in the FITS is unreliable for failed fits, so rejected pixels use
+    ``rawCum.max(axis=0)`` instead — their actual max signal level.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     good = badPixelMask == 0
-    failFlags = INSUFFICIENT_POINTS | FIT_FAILED | NON_MONOTONIC
-    failed = (badPixelMask & failFlags) != 0
+    notBorder = (badPixelMask & BORDER_PIX) == 0
+    rejected = ~good & notBorder
 
-    goodMin = fitMin[good].ravel()
     goodMax = fitMax[good].ravel()
-    failMin = fitMin[failed].ravel()
-    failMax = fitMax[failed].ravel()
+    rawMax = rawCum.max(axis=0)
+    rejMax = rawMax[rejected].ravel()
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+    fig, (axGood, axRej) = plt.subplots(2, 1, figsize=(12, 10), constrained_layout=True)
+    nMainBins = 200
+    overflowColor = "C2"
 
-    # --- Top: fitMin distribution ---
-    allMin = fitMin.ravel()
-    lo, hi = np.percentile(allMin[np.isfinite(allMin)], [0.5, 99.5])
-    bins = np.linspace(lo, hi, 200)
+    # --- Top: good pixels (fitMax) ---
+    autoLoG, autoHiG = np.percentile(goodMax, [0.5, 99.5]) if len(goodMax) else (0.0, 1.0)
+    loG = float(loOverride) if loOverride is not None else float(autoLoG)
+    hiG = float(hiOverride) if hiOverride is not None else float(autoHiG)
+    edgesG = np.linspace(loG, hiG, nMainBins + 1)
+    binWG = edgesG[1] - edgesG[0]
 
-    ax1.hist(goodMin, bins=bins, alpha=0.7, color="C0", label="good pixels")
-    if len(failMin) > 0:
-        ax1.hist(failMin, bins=bins, alpha=0.7, color="red", label="failed pixels")
-    ax1.set_xlabel("fitMin (DN)")
-    ax1.set_ylabel("Pixel count")
-    ax1.set_title("Distribution of fitMin (lower bound of fitting range)")
-    ax1.legend()
-    ax1.set_yscale("log")
+    axGood.hist(goodMax, bins=edgesG, alpha=0.7, color="C0", label="good pixels (fitMax)")
+    nBelowG = int((goodMax < loG).sum())
+    nAboveG = int((goodMax >= hiG).sum())
+    if nBelowG > 0:
+        axGood.bar(loG - binWG, nBelowG, width=binWG, color=overflowColor, alpha=0.85,
+                   align="edge", label=f"clipped < {loG:,.0f} ({nBelowG:,})")
+    if nAboveG > 0:
+        axGood.bar(hiG, nAboveG, width=binWG, color=overflowColor, alpha=0.85,
+                   align="edge", label=f"clipped ≥ {hiG:,.0f} ({nAboveG:,})")
+    axGood.axvline(loG, color=overflowColor, linewidth=0.6, linestyle=":", alpha=0.8)
+    axGood.axvline(hiG, color=overflowColor, linewidth=0.6, linestyle=":", alpha=0.8)
+    axGood.set_xlabel("fitMax (DN)")
+    axGood.set_ylabel("Pixel count")
+    axGood.set_title(f"Good pixels — fitMax distribution (n={len(goodMax):,})")
+    axGood.legend()
+    axGood.set_yscale("log")
 
-    # --- Bottom: fitMax distribution ---
-    allMax = fitMax.ravel()
-    lo, hi = np.percentile(allMax[np.isfinite(allMax)], [0.5, 99.5])
-    bins = np.linspace(lo, hi, 200)
+    # --- Bottom: rejected pixels (raw cumulative max), anchored at 0 ---
+    loR = 0.0
+    if len(rejMax) > 0:
+        autoHiR = float(np.percentile(rejMax, 99.5))
+    else:
+        autoHiR = float(hiOverride) if hiOverride is not None else float(hiG)
+    hiR = float(hiOverride) if hiOverride is not None else autoHiR
+    edgesR = np.linspace(loR, hiR, nMainBins + 1)
+    binWR = edgesR[1] - edgesR[0]
 
-    ax2.hist(goodMax, bins=bins, alpha=0.7, color="C0", label="good pixels")
-    if len(failMax) > 0:
-        ax2.hist(failMax, bins=bins, alpha=0.7, color="red", label="failed pixels")
-    ax2.set_xlabel("fitMax (DN)")
-    ax2.set_ylabel("Pixel count")
-    ax2.set_title("Distribution of fitMax (upper bound of fitting range)")
-    ax2.legend()
-    ax2.set_yscale("log")
+    if len(rejMax) > 0:
+        axRej.hist(rejMax, bins=edgesR, alpha=0.7, color="red", label="rejected pixels (raw max)")
+        nAboveR = int((rejMax >= hiR).sum())
+        if nAboveR > 0:
+            axRej.bar(hiR, nAboveR, width=binWR, color=overflowColor, alpha=0.85,
+                      align="edge", label=f"clipped ≥ {hiR:,.0f} ({nAboveR:,})")
+        axRej.axvline(hiR, color=overflowColor, linewidth=0.6, linestyle=":", alpha=0.8)
+    else:
+        axRej.text(0.5, 0.5, "No rejected pixels", transform=axRej.transAxes,
+                   ha="center", va="center", fontsize=14)
+    axRej.set_xlabel("max cumulative read (DN)")
+    axRej.set_ylabel("Pixel count")
+    axRej.set_title(f"Rejected (non-border bad) pixels — raw max (n={len(rejMax):,})")
+    axRej.set_xlim(0, hiR + binWR)
+    axRej.legend()
+    axRej.set_yscale("log")
 
-    fig.tight_layout()
+    fig.savefig(outPath, dpi=150)
+    plt.close(fig)
+    print(f"  Saved {outPath}", flush=True)
+
+
+def _plotFitRangeSpatial(
+    fitMax: np.ndarray,
+    badPixelMask: np.ndarray,
+    outPath: Path,
+    loOverride: float | None = None,
+    hiOverride: float | None = None,
+    detector: str = "",
+    visit: str = "",
+) -> None:
+    """Spatial companion to _plotFitRange: fitMax heatmap + rejected-pixel
+    density map. Uses origin='lower' (pixel (0,0) = lower-left of detector)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    good = badPixelMask == 0
+    notBorder = (badPixelMask & BORDER_PIX) == 0
+    rejected = ~good & notBorder
+    H, W = badPixelMask.shape
+
+    fig, (axMap, axDensity) = plt.subplots(1, 2, figsize=(16, 7), constrained_layout=True)
+    extent = [0, W, 0, H]
+
+    fmShow = np.where(good, fitMax, np.nan)
+    if loOverride is not None:
+        vmin = float(loOverride)
+    else:
+        vmin = float(np.nanpercentile(fmShow, 0.5))
+    if hiOverride is not None:
+        vmax = float(hiOverride)
+    else:
+        vmax = float(np.nanpercentile(fmShow, 99.5))
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad("red")
+    im0 = axMap.imshow(fmShow, origin="lower", cmap=cmap, aspect="equal",
+                       vmin=vmin, vmax=vmax, extent=extent)
+    axMap.set_title("fitMax (good pixels colored; bad/rejected in red)")
+    axMap.set_xlabel("column")
+    axMap.set_ylabel("row")
+    plt.colorbar(im0, ax=axMap, label="fitMax (DN)")
+
+    bs = 8
+    H_b, W_b = H // bs, W // bs
+    density = rejected.reshape(H_b, bs, W_b, bs).sum(axis=(1, 3)).astype(np.int32)
+    im1 = axDensity.imshow(density, origin="lower", cmap="hot", aspect="equal",
+                           extent=extent)
+    axDensity.set_title(f"Rejected (non-border bad) pixel density\n"
+                        f"{bs}×{bs} blocks; total {int(rejected.sum()):,}")
+    axDensity.set_xlabel("column")
+    axDensity.set_ylabel("row")
+    plt.colorbar(im1, ax=axDensity, label=f"count per {bs}×{bs} block")
+
+    titleParts = []
+    if detector:
+        titleParts.append(f"det {detector}")
+    if visit:
+        titleParts.append(f"visit {visit}")
+    if titleParts:
+        fig.suptitle(", ".join(titleParts), fontsize=11)
+
     fig.savefig(outPath, dpi=150)
     plt.close(fig)
     print(f"  Saved {outPath}", flush=True)
@@ -346,10 +594,14 @@ def _loadInputRamp(dataDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
         f"min={ramp.reads.min():.4g} max={ramp.reads.max():.4g}",
         flush=True,
     )
-    print(
-        f"  photodiode[0..2]={photodiode[:3]} photodiode[-1]={photodiode[-1]}",
-        flush=True,
-    )
+    if photodiode.size == 0:
+        print("  photodiode: (not recorded for this ramp)", flush=True)
+        noPhotodiode = True
+    else:
+        print(
+            f"  photodiode[0..2]={photodiode[:3]} photodiode[-1]={photodiode[-1]}",
+            flush=True,
+        )
 
     if noPhotodiode:
         print("  photodiode correction: DISABLED", flush=True)
@@ -411,6 +663,10 @@ def main() -> None:
                         help="Reject pixels with refDelta below this fraction of median rate (default: 0.5)")
     parser.add_argument("--data-dir", type=str, default="examples/linearity/18734",
                         help="Directory containing the .npz ramp file (default: examples/linearity/18734)")
+    parser.add_argument("--fitrange-min", type=float, default=None,
+                        help="Lower bound (DN) for the fit-range histogram (default: auto p0.5)")
+    parser.add_argument("--fitrange-max", type=float, default=None,
+                        help="Upper bound (DN) for the fit-range histogram (default: auto p99.5)")
     args = parser.parse_args()
 
     if not args.fit and not args.plot:
@@ -603,10 +859,21 @@ def main() -> None:
             visit=str(summary.get("visit", "")),
         )
         _plotFitRange(
-            fitMin=loaded.fitMin,
             fitMax=loaded.fitMax,
             badPixelMask=loaded.badPixelMask,
+            rawCum=rawCum,
             outPath=outDir / f"diagnostic_fit_range.{args.plot_format}",
+            loOverride=args.fitrange_min,
+            hiOverride=args.fitrange_max,
+        )
+        _plotFitRangeSpatial(
+            fitMax=loaded.fitMax,
+            badPixelMask=loaded.badPixelMask,
+            outPath=outDir / f"diagnostic_fit_range_spatial.{args.plot_format}",
+            loOverride=args.fitrange_min,
+            hiOverride=args.fitrange_max,
+            detector=str(summary.get("detector", detName)),
+            visit=str(summary.get("visit", "")),
         )
         _t("done (plot)", t0)
 
