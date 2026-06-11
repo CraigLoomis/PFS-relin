@@ -1,11 +1,7 @@
-[build-system]
-requires = ["uv_build>=0.5"]
-build-backend = "uv_build"
-
 [project]
-name = "nirLinearity"
+name = "nirLinearity-validation"
 version = "0.1.0"
-description = "Per-pixel nonlinearity correction for IR detector ramps"
+description = "Validation harness for the lsst.obs.pfs.h4Linearity package (examples + tests)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -22,15 +18,19 @@ dev = [
     "ruff>=0.5",
 ]
 
-[tool.uv.build-backend]
-# Our package lives at python/nirLinearity/ rather than the default src layout.
-module-name = "nirLinearity"
-module-root = "python"
+[tool.uv]
+# This project is the validation harness; the package under test
+# (lsst.obs.pfs.h4Linearity) lives in a sibling product and is loaded
+# via PYTHONPATH (see .env). uv should not try to build/install us.
+package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
-pythonpath = ["python"]
+pythonpath = [
+    "examples",
+    "/Users/cloomis/claude/PIPE2D-1843/obs_pfs/python",
+]
 
 [tool.ruff]
 line-length = 110

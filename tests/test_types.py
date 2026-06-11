@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from nirLinearity.types import (
+from lsst.obs.pfs.h4Linearity.types import (
     BORDER_PIX,
     MASKED_BY_INPUT,
     INSUFFICIENT_POINTS,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from nirLinearity.models.base import BlockFitResult, Model
+from lsst.obs.pfs.h4Linearity.models.base import BlockFitResult, Model
 
 
 def test_blockFitResultConstruction():

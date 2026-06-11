@@ -13,11 +13,12 @@ from pathlib import Path
 
 import numpy as np
 
-import nirLinearity
-from nirLinearity.loaders import loadNpz
-from nirLinearity.types import (
+import lsst.obs.pfs.h4Linearity as nirLinearity
+from _loader import loadNpz
+from lsst.obs.pfs.h4Linearity.types import (
     BORDER_PIX,
     FIT_FAILED,
+    HIGH_FIT_RESIDUAL,
     INSUFFICIENT_POINTS,
     MASKED_BY_INPUT,
     NON_MONOTONIC,
@@ -29,6 +30,39 @@ def _t(label: str, t0: float) -> float:
     now = time.perf_counter()
     print(f"  [{now - t0:7.2f}s] {label}", flush=True)
     return now
+
+
+def _saveOrAddPage(fig, target):
+    """Save ``fig`` to ``target``: either to a path on disk, or as the next
+    page of an open ``PdfPages``. Closes ``fig`` after writing."""
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    if isinstance(target, PdfPages):
+        target.savefig(fig, dpi=150)
+    else:
+        fig.savefig(target, dpi=150)
+        print(f"  Saved {target}", flush=True)
+    plt.close(fig)
+
+
+def _applyBridge(correction, ramp):
+    """Bridge for the half-done PIPE2D-1843 transpose.
+
+    Upstream's ``apply.py`` / ``Ramp.reads`` / ``LinearizedRamp.cumulativeLinear``
+    are still documented and implemented as ``(H, W, N)``, but our examples
+    (and the new upstream ``fit.py``) use ``(N, H, W)``. Transpose around the
+    apply call so downstream sanity_check code stays in ``(N, H, W)``. Remove
+    this wrapper once the transpose is finished upstream.
+    """
+    from types import SimpleNamespace
+
+    readsHWN = np.moveaxis(ramp.reads, 0, -1).astype(np.float32, copy=True)
+    res = nirLinearity.apply(correction, Ramp(reads=readsHWN, validMask=ramp.validMask))
+    return SimpleNamespace(
+        cumulativeLinear=np.moveaxis(res.cumulativeLinear, -1, 0),
+        badPixelMask=res.badPixelMask,
+    )
 
 
 def _plotDiagnostic(
@@ -46,6 +80,8 @@ def _plotDiagnostic(
     deviationLimit: float | None = None,
     nRefReads: int = 5,
     saturationLevel: float | None = None,
+    saturationKnee: float | None = None,
+    badLinearityMedianMultiplier: float | None = None,
     seed: int = 0,
     detector: str = "",
     visit: str = "",
@@ -213,7 +249,7 @@ def _plotDiagnostic(
         hotSel = rngRej.choice(hotSel, size=nPlot, replace=False)
     categoryPlot.append((
         f"hot (first-{nHotRef} rate > {hotThresh:,.0f} DN/read, 2× good {goodInitRate:,.0f})",
-        "C3", 0.5, 1.0, hotSel, nHot,
+        "C3", 0.2, 1.0, hotSel, nHot,
     ))
 
     # (e) NON_MONOTONIC — only if any qualifying pixels exist.
@@ -303,25 +339,48 @@ def _plotDiagnostic(
             "C2", 0.15, 0.8, hotFlat // W, hotFlat % W, nHotGood,
         ))
 
-    totalGoodPlotted = sum(len(c[4]) for c in goodCategoryPlot)
-    if totalGoodPlotted == 0 and medianTrace is None:
-        axRejBar.text(0.5, 0.5, "No good pixels", transform=axRejBar.transAxes,
+    # --- Row 4 right: rejected pixels grouped by named failure flag. ---
+    # One color per flag bit. BORDER_PIX is excluded (per established
+    # convention); MASKED_BY_INPUT appears if the caller supplied a mask.
+    failureFlags = [
+        ("HIGH_FIT_RESIDUAL", HIGH_FIT_RESIDUAL, "C3"),    # red
+        ("INSUFFICIENT_POINTS", INSUFFICIENT_POINTS, "C1"),  # orange
+        ("FIT_FAILED", FIT_FAILED, "C4"),                  # purple
+        ("NON_MONOTONIC", NON_MONOTONIC, "magenta"),
+        ("MASKED_BY_INPUT", MASKED_BY_INPUT, "C7"),        # gray
+    ]
+    failureCategoryPlot: list[tuple[str, str, float, float, np.ndarray, np.ndarray, int]] = []
+    for fname, fbit, fcolor in failureFlags:
+        fmask = ((badPixelMask & fbit) != 0) & notBorder
+        fidx = np.flatnonzero(fmask.ravel())
+        ftotal = len(fidx)
+        if ftotal == 0:
+            continue
+        if ftotal > nPlot:
+            fidx = rngRej.choice(fidx, size=nPlot, replace=False)
+        failureCategoryPlot.append(
+            (fname, fcolor, 0.15, 0.8, fidx // W, fidx % W, ftotal)
+        )
+
+    totalFailurePlotted = sum(len(c[4]) for c in failureCategoryPlot)
+    totalFailureFound = sum(c[6] for c in failureCategoryPlot)
+    if totalFailurePlotted == 0 and medianTrace is None:
+        axRejBar.text(0.5, 0.5, "No rejected pixels", transform=axRejBar.transAxes,
                       ha="center", va="center", fontsize=14)
     else:
-        for _label, color, alpha, lw, rrows, rcols, _total in goodCategoryPlot:
-            if len(rrows) == 0:
+        for _flabel, fcolor, falpha, flw, frrows, frcols, _ftotal in failureCategoryPlot:
+            if len(frrows) == 0:
                 continue
-            sub = rawCum[:, rrows, rcols]  # (N, k)
-            axRejBar.plot(reads, sub, color=color, alpha=alpha, linewidth=lw)
-
+            sub = rawCum[:, frrows, frcols]
+            axRejBar.plot(reads, sub, color=fcolor, alpha=falpha, linewidth=flw)
     if medianTrace is not None:
         axRejBar.plot(reads, medianTrace, "k-", linewidth=1.5)
 
     legendHandles2 = []
-    for label, color, _alpha, _lw, rrows, _rcols, total in goodCategoryPlot:
+    for flabel, fcolor, _falpha, _flw, frrows, _frcols, ftotal in failureCategoryPlot:
         legendHandles2.append(Line2D(
-            [0], [0], color=color, linewidth=2.0,
-            label=f"{label}: plotted {len(rrows):,} / found {total:,}",
+            [0], [0], color=fcolor, linewidth=2.0,
+            label=f"{flabel}: plotted {len(frrows):,} / found {ftotal:,}",
         ))
     if medianTrace is not None:
         legendHandles2.append(Line2D(
@@ -330,45 +389,72 @@ def _plotDiagnostic(
     axRejBar.legend(handles=legendHandles2, loc="upper left", framealpha=0.9, fontsize=8)
     axRejBar.set_xlabel("Read number")
     axRejBar.set_ylabel("Cumulative DN")
-    nGoodTotal = int(good.sum())
-    axRejBar.set_title(f"Good pixel traces — plotted {totalGoodPlotted:,} of {nGoodTotal:,} good")
+    axRejBar.set_title(
+        f"Rejected pixels by named failure flag — "
+        f"plotted {totalFailurePlotted:,} of {totalFailureFound:,}"
+    )
     axRejBar.grid(True, alpha=0.3)
 
-    # --- Row 3: same good-population pixels, plotted in row-1 ("accumulated flux") style. ---
-    # Combine all good-population pixels (faint+bright+hot) and render each pixel
-    # exactly like row 1: in-range segments in C0/C1, out-of-range in red.
-    popRows: list[np.ndarray] = []
-    popCols: list[np.ndarray] = []
-    for _label, _color, _alpha, _lw, rrows, rcols, _total in goodCategoryPlot:
-        if len(rrows) > 0:
-            popRows.append(np.asarray(rrows))
-            popCols.append(np.asarray(rcols))
-    if popRows:
-        popR = np.concatenate(popRows)
-        popC = np.concatenate(popCols)
-    else:
-        popR = np.array([], dtype=int)
-        popC = np.array([], dtype=int)
+    # --- Row 3: extreme good pixels — uncorrected / linearized accumulated flux.
+    # Each pixel is rendered in its category color (faint=C0, bright=C1, hot=C2)
+    # for the in-range portion of the trace, with red overlaying any read where
+    # the trace exits ``[fitMin, fitMax]``. Same y-scale as row 1.
+    totalGoodPlotted = sum(len(c[4]) for c in goodCategoryPlot)
+    nGoodTotal = int(good.sum())
+    for label, color, alpha, lw, rrows, rcols, _total in goodCategoryPlot:
+        for k in range(len(rrows)):
+            r, c = rrows[k], rcols[k]
+            mTrace = rawCum[:, r, c]
+            tTrace = linCum[:, r, c]
+            fMin, fMax = fitMin[r, c], fitMax[r, c]
+            inRange = (mTrace >= fMin) & (mTrace <= fMax)
+            for seg, segColor in _segments(reads, mTrace, inRange, color, "red"):
+                axGoodPopRaw.plot(seg[0], seg[1], color=segColor, alpha=alpha, linewidth=lw)
+            for seg, segColor in _segments(reads, tTrace, inRange, color, "red"):
+                axGoodPopLin.plot(seg[0], seg[1], color=segColor, alpha=alpha, linewidth=lw)
 
-    for r, c in zip(popR, popC):
-        mTrace = rawCum[:, r, c]
-        tTrace = linCum[:, r, c]
-        fMin, fMax = fitMin[r, c], fitMax[r, c]
-        inRange = (mTrace >= fMin) & (mTrace <= fMax)
-        for seg, color in _segments(reads, mTrace, inRange, "C0", "red"):
-            axGoodPopRaw.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
-        for seg, color in _segments(reads, tTrace, inRange, "C1", "red"):
-            axGoodPopLin.plot(seg[0], seg[1], color=color, alpha=0.08, linewidth=0.5)
+    # Median good-pixel reference (raw side already has medianTrace; lin side
+    # gets its own median over the same sample indices).
+    if medianTrace is not None:
+        axGoodPopRaw.plot(reads, medianTrace, "k-", linewidth=1.5)
+        medianTraceLin = np.median(linCum[:, gRows, gCols], axis=1)
+        axGoodPopLin.plot(reads, medianTraceLin, "k-", linewidth=1.5)
 
     for ax in (axGoodPopRaw, axGoodPopLin):
-        ax.plot(reads, idealCum, "k--", linewidth=1, label=f"ideal (rate={rate:.1f} DN/read)")
-        ax.legend(loc="upper left")
+        ax.plot(reads, idealCum, "k--", linewidth=1, alpha=0.5)
         ax.set_ylim(0, rate * N * 1.3)
         ax.grid(True, alpha=0.3)
         ax.set_ylabel("Cumulative DN")
         ax.set_xlabel("Read number")
-    axGoodPopRaw.set_title(f"Uncorrected — accumulated flux ({len(popR)} good-population pixels)")
-    axGoodPopLin.set_title(f"Linearized — accumulated flux ({len(popR)} good-population pixels)")
+
+    # Legend: per-category proxies + median + red-overlay + ideal line.
+    legendHandles3 = []
+    for label, color, _alpha, _lw, rrows, _rcols, total in goodCategoryPlot:
+        legendHandles3.append(Line2D(
+            [0], [0], color=color, linewidth=2.0,
+            label=f"{label}: plotted {len(rrows):,} / found {total:,}",
+        ))
+    if medianTrace is not None:
+        legendHandles3.append(Line2D(
+            [0], [0], color="k", linewidth=1.5, label="median good pixel",
+        ))
+    legendHandles3.append(Line2D(
+        [0], [0], color="red", linewidth=2.0, label="out of fit range",
+    ))
+    legendHandles3.append(Line2D(
+        [0], [0], color="k", linestyle="--", linewidth=1,
+        label=f"ideal (rate={rate:.1f} DN/read)",
+    ))
+    axGoodPopRaw.legend(handles=legendHandles3, loc="upper left", framealpha=0.9, fontsize=8)
+    axGoodPopLin.legend(handles=legendHandles3, loc="upper left", framealpha=0.9, fontsize=8)
+    axGoodPopRaw.set_title(
+        f"Selection of extreme good pixels — uncorrected accumulated flux "
+        f"(plotted {totalGoodPlotted:,})"
+    )
+    axGoodPopLin.set_title(
+        f"Selection of extreme good pixels — linearized accumulated flux "
+        f"(plotted {totalGoodPlotted:,})"
+    )
 
     titleParts = []
     if detector:
@@ -380,12 +466,22 @@ def _plotDiagnostic(
         titleParts.append(f"deviationLimit={deviationLimit}, nRefReads={nRefReads}")
     if saturationLevel is not None:
         titleParts.append(f"saturationLevel={saturationLevel:.0f}")
-    if deviationLimit is None and saturationLevel is None:
+    if saturationKnee is not None:
+        titleParts.append(f"saturationKnee={saturationKnee}")
+    else:
+        titleParts.append("saturationKnee=off")
+    if badLinearityMedianMultiplier is not None:
+        titleParts.append(f"badLinearityMedianMultiplier={badLinearityMedianMultiplier}")
+    else:
+        titleParts.append("badLinearityMedianMultiplier=off")
+    if (
+        deviationLimit is None
+        and saturationLevel is None
+        and saturationKnee is None
+    ):
         titleParts.append("no clipping")
     fig.suptitle(", ".join(titleParts), fontsize=11)
-    fig.savefig(outPath, dpi=150)
-    plt.close(fig)
-    print(f"  Saved {outPath}", flush=True)
+    _saveOrAddPage(fig, outPath)
 
 
 def _segments(
@@ -454,7 +550,7 @@ def _plotFitRange(
     overflowColor = "C2"
 
     # --- Top: good pixels (fitMax) ---
-    autoLoG, autoHiG = np.percentile(goodMax, [0.5, 99.5]) if len(goodMax) else (0.0, 1.0)
+    autoLoG, autoHiG = np.percentile(goodMax, [0.05, 99.95]) if len(goodMax) else (0.0, 1.0)
     loG = float(loOverride) if loOverride is not None else float(autoLoG)
     hiG = float(hiOverride) if hiOverride is not None else float(autoHiG)
     edgesG = np.linspace(loG, hiG, nMainBins + 1)
@@ -480,7 +576,7 @@ def _plotFitRange(
     # --- Bottom: rejected pixels (raw cumulative max), anchored at 0 ---
     loR = 0.0
     if len(rejMax) > 0:
-        autoHiR = float(np.percentile(rejMax, 99.5))
+        autoHiR = float(np.percentile(rejMax, 99.95))
     else:
         autoHiR = float(hiOverride) if hiOverride is not None else float(hiG)
     hiR = float(hiOverride) if hiOverride is not None else autoHiR
@@ -504,9 +600,7 @@ def _plotFitRange(
     axRej.legend()
     axRej.set_yscale("log")
 
-    fig.savefig(outPath, dpi=150)
-    plt.close(fig)
-    print(f"  Saved {outPath}", flush=True)
+    _saveOrAddPage(fig, outPath)
 
 
 def _plotFitRangeSpatial(
@@ -569,9 +663,7 @@ def _plotFitRangeSpatial(
     if titleParts:
         fig.suptitle(", ".join(titleParts), fontsize=11)
 
-    fig.savefig(outPath, dpi=150)
-    plt.close(fig)
-    print(f"  Saved {outPath}", flush=True)
+    _saveOrAddPage(fig, outPath)
 
 
 def _loadInputRamp(dataDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
@@ -661,12 +753,18 @@ def main() -> None:
                         help="Skip photodiode illumination-drift correction")
     parser.add_argument("--low-flux-fraction", type=float, default=0.5,
                         help="Reject pixels with refDelta below this fraction of median rate (default: 0.5)")
+    parser.add_argument("--saturation-knee", type=float, default=0.5,
+                        help="Per-pixel knee: first delta < saturationKnee × refDelta truncates "
+                             "the fit window from that read on (default: 0.5; -1 to disable)")
+    parser.add_argument("--bad-linearity-multiplier", type=float, default=5.0,
+                        help="Flag HIGH_FIT_RESIDUAL when residualRms > multiplier × median(good "
+                             "residualRms) (default: 5.0; -1 to disable)")
     parser.add_argument("--data-dir", type=str, default="examples/linearity/18734",
                         help="Directory containing the .npz ramp file (default: examples/linearity/18734)")
     parser.add_argument("--fitrange-min", type=float, default=None,
-                        help="Lower bound (DN) for the fit-range histogram (default: auto p0.5)")
+                        help="Lower bound (DN) for the fit-range histogram (default: auto p0.05)")
     parser.add_argument("--fitrange-max", type=float, default=None,
-                        help="Upper bound (DN) for the fit-range histogram (default: auto p99.5)")
+                        help="Upper bound (DN) for the fit-range histogram (default: auto p99.95)")
     args = parser.parse_args()
 
     if not args.fit and not args.plot:
@@ -686,6 +784,19 @@ def main() -> None:
         cliTag += f"_sat{int(args.saturation_level)}"
     if args.low_flux_fraction != 0.5:
         cliTag += f"_lff{args.low_flux_fraction}"
+    # CLI value -1 maps to None at the upstream API (disables the gate).
+    saturationKnee = None if args.saturation_knee < 0 else args.saturation_knee
+    badLinearityMultiplier = (
+        None if args.bad_linearity_multiplier < 0 else args.bad_linearity_multiplier
+    )
+    if saturationKnee != 0.5:
+        cliTag += f"_knee{saturationKnee}" if saturationKnee is not None else "_kneeOff"
+    if badLinearityMultiplier != 5.0:
+        cliTag += (
+            f"_blm{badLinearityMultiplier}"
+            if badLinearityMultiplier is not None
+            else "_blmOff"
+        )
     outDir = dataDir / cliTag
     fitsPath = outDir / f"{detName}_linearity.fits"
 
@@ -708,7 +819,7 @@ def main() -> None:
         rows = sampleIdx // W
         cols = sampleIdx % W
 
-        from nirLinearity.models import PolynomialModel
+        from lsst.obs.pfs.h4Linearity.models import PolynomialModel
         model = PolynomialModel(order=args.order)
         print(f"Fitting (order={args.order}) ...", flush=True)
         correction = nirLinearity.fit(
@@ -718,6 +829,8 @@ def main() -> None:
             deviationStart=args.deviation_start,
             saturationLevel=args.saturation_level,
             lowFluxFraction=args.low_flux_fraction,
+            saturationKnee=saturationKnee,
+            badLinearityMedianMultiplier=badLinearityMultiplier,
         )
         t1 = _t("nirLinearity.fit", t0)
 
@@ -758,7 +871,7 @@ def main() -> None:
         print(f"  badPixelMask bitwise-equal:   {bpMatch}", flush=True)
 
         print("Applying correction to input ramp ...", flush=True)
-        result = nirLinearity.apply(loaded, correctedRamp)
+        result = _applyBridge(loaded, correctedRamp)
         t1 = _t("nirLinearity.apply", t1)
 
         good = loaded.badPixelMask == 0
@@ -792,7 +905,7 @@ def main() -> None:
             flush=True,
         )
 
-        from nirLinearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE
+        from lsst.obs.pfs.h4Linearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE
         belowCount = int((result.badPixelMask & BELOW_VALID_RANGE > 0).sum())
         aboveCount = int((result.badPixelMask & ABOVE_VALID_RANGE > 0).sum())
         nPix = result.badPixelMask.size
@@ -831,50 +944,76 @@ def main() -> None:
         deviationLimit = summary.get("deviationLimit")
         saturationLevel = summary.get("saturationLevel")
         nRefReads = summary.get("nRefReads", 5)
+        saturationKneeFromFits = summary.get("saturationKnee")
+        badLinearityMultiplierFromFits = summary.get("badLinearityMedianMultiplier")
+        # Detector ID for filenames: prefer the FITS header, fall back to the
+        # data-dir basename. Keeps plot files self-identifying when copied around.
+        detId = str(summary.get("detector", detName))
 
         print("Applying correction to input ramp ...", flush=True)
-        result = nirLinearity.apply(loaded, correctedRamp)
+        result = _applyBridge(loaded, correctedRamp)
         t1 = _t("nirLinearity.apply", t1)
 
         rawCum = correctedRamp.reads.astype(np.float32)
 
         print("Generating diagnostic plots ...", flush=True)
-        _plotDiagnostic(
-            rawCum=rawCum,
-            linCum=result.cumulativeLinear,
-            fitMin=loaded.fitMin,
-            fitMax=loaded.fitMax,
-            badPixelMask=loaded.badPixelMask,
-            rows=rows,
-            cols=cols,
-            rate=float(np.median(correctedRamp.reads[2] - correctedRamp.reads[1])),
-            outPath=outDir / f"diagnostic.{args.plot_format}",
-            nPlot=args.nplot,
-            order=order,
-            deviationLimit=deviationLimit,
-            nRefReads=nRefReads,
-            saturationLevel=saturationLevel,
-            seed=args.seed,
-            detector=str(summary.get("detector", detName)),
-            visit=str(summary.get("visit", "")),
-        )
-        _plotFitRange(
-            fitMax=loaded.fitMax,
-            badPixelMask=loaded.badPixelMask,
-            rawCum=rawCum,
-            outPath=outDir / f"diagnostic_fit_range.{args.plot_format}",
-            loOverride=args.fitrange_min,
-            hiOverride=args.fitrange_max,
-        )
-        _plotFitRangeSpatial(
-            fitMax=loaded.fitMax,
-            badPixelMask=loaded.badPixelMask,
-            outPath=outDir / f"diagnostic_fit_range_spatial.{args.plot_format}",
-            loOverride=args.fitrange_min,
-            hiOverride=args.fitrange_max,
-            detector=str(summary.get("detector", detName)),
-            visit=str(summary.get("visit", "")),
-        )
+        rate_ = float(np.median(correctedRamp.reads[2] - correctedRamp.reads[1]))
+        detector_ = str(summary.get("detector", detName))
+        visit_ = str(summary.get("visit", ""))
+
+        def _plotAll(target, fitRangeTarget, spatialTarget):
+            _plotDiagnostic(
+                rawCum=rawCum,
+                linCum=result.cumulativeLinear,
+                fitMin=loaded.fitMin,
+                fitMax=loaded.fitMax,
+                badPixelMask=loaded.badPixelMask,
+                rows=rows,
+                cols=cols,
+                rate=rate_,
+                outPath=target,
+                nPlot=args.nplot,
+                order=order,
+                deviationLimit=deviationLimit,
+                nRefReads=nRefReads,
+                saturationLevel=saturationLevel,
+                saturationKnee=saturationKneeFromFits,
+                badLinearityMedianMultiplier=badLinearityMultiplierFromFits,
+                seed=args.seed,
+                detector=detector_,
+                visit=visit_,
+            )
+            _plotFitRange(
+                fitMax=loaded.fitMax,
+                badPixelMask=loaded.badPixelMask,
+                rawCum=rawCum,
+                outPath=fitRangeTarget,
+                loOverride=args.fitrange_min,
+                hiOverride=args.fitrange_max,
+            )
+            _plotFitRangeSpatial(
+                fitMax=loaded.fitMax,
+                badPixelMask=loaded.badPixelMask,
+                outPath=spatialTarget,
+                loOverride=args.fitrange_min,
+                hiOverride=args.fitrange_max,
+                detector=detector_,
+                visit=visit_,
+            )
+
+        if args.plot_format == "pdf":
+            # Multi-page PDF — all three diagnostics in one file per detector.
+            from matplotlib.backends.backend_pdf import PdfPages
+            combinedPath = outDir / f"diagnostic_{detId}.pdf"
+            with PdfPages(combinedPath) as pdf:
+                _plotAll(pdf, pdf, pdf)
+            print(f"  Saved {combinedPath}", flush=True)
+        else:
+            _plotAll(
+                outDir / f"diagnostic_{detId}.{args.plot_format}",
+                outDir / f"diagnostic_fit_range_{detId}.{args.plot_format}",
+                outDir / f"diagnostic_fit_range_spatial_{detId}.{args.plot_format}",
+            )
         _t("done (plot)", t0)
 
 

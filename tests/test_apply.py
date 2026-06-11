@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from nirLinearity.apply import apply, applyFrame
-from nirLinearity.fit import fit
-from nirLinearity.models import PolynomialModel
-from nirLinearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE, Ramp
+from lsst.obs.pfs.h4Linearity.apply import apply, applyFrame
+from lsst.obs.pfs.h4Linearity.fit import fit
+from lsst.obs.pfs.h4Linearity.models import PolynomialModel
+from lsst.obs.pfs.h4Linearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE, Ramp
 
 
 def test_applyOnFittedRampYieldsTarget(smallSyntheticRamp):

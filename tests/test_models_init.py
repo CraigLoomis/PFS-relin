@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nirLinearity.models import MODEL_REGISTRY, PolynomialModel, registerModel
+from lsst.obs.pfs.h4Linearity.models import MODEL_REGISTRY, PolynomialModel, registerModel
 
 
 def test_polynomialRegistered():

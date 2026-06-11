@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from nirLinearity.fit import fit
-from nirLinearity.io import loadFits, saveFits
-from nirLinearity.models import PolynomialModel
-from nirLinearity.types import Ramp
+from lsst.obs.pfs.h4Linearity.fit import fit
+from lsst.obs.pfs.h4Linearity.io import loadFits, saveFits
+from lsst.obs.pfs.h4Linearity.models import PolynomialModel
+from lsst.obs.pfs.h4Linearity.types import Ramp
 
 
 def _makeCorrection():

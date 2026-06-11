@@ -8,8 +8,8 @@ import threading
 import numpy as np
 import pytest
 
-from nirLinearity.fit import _resolveWorkerCount, fit
-from nirLinearity.models import PolynomialModel
+from lsst.obs.pfs.h4Linearity.fit import _resolveWorkerCount, fit
+from lsst.obs.pfs.h4Linearity.models import PolynomialModel
 
 
 def test_resolveWorkerCountExplicitIntIsReturnedAsIs():

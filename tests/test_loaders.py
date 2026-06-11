@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from nirLinearity.loaders import loadNpz
-from nirLinearity.types import Ramp
+from lsst.obs.pfs.h4Linearity.loaders import loadNpz
+from lsst.obs.pfs.h4Linearity.types import Ramp
 
 
 def test_loadNpzReturnsRampAndPhotodiode(tmp_path):
@@ -26,4 +26,4 @@ def test_loadNpzReturnsRampAndPhotodiode(tmp_path):
 
 
 def test_saturationModuleIsImportable():
-    import nirLinearity.saturation  # noqa: F401
+    import lsst.obs.pfs.h4Linearity.saturation  # noqa: F401
