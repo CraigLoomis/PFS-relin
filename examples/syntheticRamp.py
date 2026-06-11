@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from nirLinearity.types import Ramp
+from lsst.obs.pfs.h4Linearity.types import Ramp
 
 
 def syntheticRamp(

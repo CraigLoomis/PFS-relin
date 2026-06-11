@@ -1,18 +1,18 @@
 """Smoke test: the package imports cleanly."""
 
 def test_packageImports():
-    import nirLinearity
+    import lsst.obs.pfs.h4Linearity as nirLinearity
     assert nirLinearity is not None
 
 
 def test_modelsSubpackageImports():
-    import nirLinearity.models
+    import lsst.obs.pfs.h4Linearity as nirLinearity
+    import lsst.obs.pfs.h4Linearity.models  # noqa: F401
     assert nirLinearity.models is not None
 
 
 def test_publicApiExports():
-    import nirLinearity
-
+    import lsst.obs.pfs.h4Linearity as nirLinearity
     for attr in [
         "Ramp",
         "LinearizedRamp",

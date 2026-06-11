@@ -29,9 +29,9 @@ from pathlib import Path
 
 import numpy as np
 
-import nirLinearity
-from nirLinearity.loaders import loadNpz
-from nirLinearity.types import Ramp
+import lsst.obs.pfs.h4Linearity as nirLinearity
+from _loader import loadNpz
+from lsst.obs.pfs.h4Linearity.types import Ramp
 
 from syntheticRamp import syntheticRamp
 

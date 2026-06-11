@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-import nirLinearity
-
+import lsst.obs.pfs.h4Linearity as nirLinearity
 
 def test_integrationEndToEnd(smallSyntheticRamp, tmp_path):
     ramp, truth = smallSyntheticRamp
