@@ -29,7 +29,7 @@ testpaths = ["tests"]
 addopts = "-v"
 pythonpath = [
     "examples",
-    "/Users/cloomis/claude/PIPE2D-1843/obs_pfs/python",
+    "/Users/cloomis/claude/obs_pfs/PIPE2D-1844/python",
 ]
 
 [tool.ruff]
