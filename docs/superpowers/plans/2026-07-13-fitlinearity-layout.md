@@ -25,6 +25,14 @@
   setup -j -r /work/cloomis/claude/PIPE2D-1844/drp_stella
   ```
   Use the LSST-env `python` directly. Do **not** use `uv run` — it builds an isolated venv that cannot see the LSST conda site-packages.
+- **The suite is not green, and that is expected.** `pytest` reports **9 failed, 39 passed** against the current obs_pfs, and did so before this branch existed. Upstream finished the `(N,H,W)` → `(H,W,N)` array-order transpose; `apply()` now validates `ramp.reads` as `(H,W,N)` while `fit()` and the harness tests still produce `(N,H,W)`. Fixing that is separate work, not layout work.
+
+  The known-red 9, all in `apply` / `evaluate` / Chebyshev:
+  - `tests/test_apply.py` — `test_applyOnFittedRampYieldsTarget`, `test_applyFlagsOutOfRangeForExtrapolation`, `test_applyLeavesBadPixelsUntouched`, `test_applyFrameMatchesApplyOnSingleRead`
+  - `tests/test_integration.py` — `test_integrationEndToEnd`
+  - `tests/test_polynomial_model.py` — `test_evaluateChebyshevIdentity`, `test_evaluateChebyshevConstant`, `test_evaluateChebyshevKnownSeries`, `test_fitBlockChebyshevRecoversLinear`
+
+  **The gate everywhere in this plan is: no NEW failures beyond those 9, and every test this plan adds passes.** Wherever a step below says "all tests PASS", read it that way. Do not attempt to fix the 9.
 
 ---
 
@@ -124,7 +132,7 @@ Expected: `Validation harness for lsst.obs.pfs.h4Linearity.`
 - [ ] **Step 5: Verify the existing tests still pass**
 
 Run: `pytest`
-Expected: all tests PASS. They import only `lsst.obs.pfs.h4Linearity`, which now resolves through EUPS rather than the deleted `pythonpath` entry. A `ModuleNotFoundError: lsst.obs.pfs` here means the EUPS setup chain in Global Constraints was not run.
+Expected: **9 failed, 39 passed** — the known-red baseline in Global Constraints, unchanged. The point of this step is that the failures are `ValueError` from inside obs_pfs, *not* `ModuleNotFoundError: lsst.obs.pfs`: obs_pfs resolves through EUPS alone, now that the `pythonpath` entry is gone. A `ModuleNotFoundError` here means the EUPS setup chain was not run.
 
 - [ ] **Step 6: Commit**
 
@@ -1279,6 +1287,14 @@ Expected: `18734_linearity.fits` and `diagnostic_18734.pdf`.
 If the fit's summary diagnostics are available, compare against the known-good
 18660 parity numbers before declaring victory — but 18734 at `o4` has no
 recorded baseline, so a clean run plus the bitwise-equal checks is the bar here.
+
+**If the `apply` stage raises the transpose `ValueError`** (`ramp H,W = ... does
+not match correction H,W = ...`, from `obs_pfs/.../apply.py`), that is the
+known-red upstream issue from Global Constraints reaching the sanity check
+through `_applyBridge`, not a layout bug. Do **not** try to fix it. Report it,
+and treat the task as verified if the fit → saveFits → loadFits stages complete
+and the FITS lands in the right directory — which is what this plan actually
+changed.
 
 - [ ] **Step 6: Commit**
 
