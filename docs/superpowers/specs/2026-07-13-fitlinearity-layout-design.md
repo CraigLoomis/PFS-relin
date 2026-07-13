@@ -17,7 +17,7 @@ absolute path baked into a config file.
 - Turn `examples/` into a package at `python/fitLinearity/`, with executables in `bin/`.
 - Read fit inputs from `jhu-data/`, addressed by detector id.
 - Write outputs under `/work/cloomis/outputs/fitLinearity/`.
-- Resolve `obs_pfs` and `drp_stella` through EUPS `setup` from `../PIPE2D-1844/`.
+- Resolve `obs_pfs` and `drp_stella` through EUPS `setup` from `/work/cloomis/claude/PIPE2D-1844/`.
 - Delete `python.bak/`.
 
 Out of scope: the git checkout directory keeps its current name (`relin/`); no
@@ -90,14 +90,14 @@ The root is `/work/cloomis/outputs/fitLinearity`, overridable with
 
 ### Upstream products
 
-`obs_pfs` and `drp_stella` come from `../PIPE2D-1844/` and are activated through
+`obs_pfs` and `drp_stella` come from `/work/cloomis/claude/PIPE2D-1844/` and are activated through
 EUPS, never through `PYTHONPATH`:
 
 ```bash
 source /work/stack/loadLSST.bash
 setup pfs_pipe2d
-setup -j -r ../PIPE2D-1844/obs_pfs
-setup -j -r ../PIPE2D-1844/drp_stella
+setup -j -r /work/cloomis/claude/PIPE2D-1844/obs_pfs
+setup -j -r /work/cloomis/claude/PIPE2D-1844/drp_stella
 ```
 
 The hardcoded absolute `pythonpath` entry is removed from `pyproject.toml`. The

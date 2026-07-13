@@ -6,7 +6,7 @@
 
 **Architecture:** All importable logic moves into `python/fitLinearity/`. A new `paths.py` is the single owner of the input and output roots. Each `bin/` script owns its own `argparse` parser, builds a config object, resolves paths through `paths.py`, and calls into the package. The photodiode illumination-drift correction — currently copy-pasted into `sanity_check.py` and both benchmarks — is consolidated into `loader.loadCorrectedRamp`.
 
-**Tech Stack:** Python 3.12, numpy, astropy, matplotlib, pytest. Upstream `lsst.obs.pfs.h4Linearity` from `../PIPE2D-1844/obs_pfs`, activated with EUPS.
+**Tech Stack:** Python 3.12, numpy, astropy, matplotlib, pytest. Upstream `lsst.obs.pfs.h4Linearity` from `/work/cloomis/claude/PIPE2D-1844/obs_pfs`, activated with EUPS.
 
 ## Global Constraints
 
@@ -21,8 +21,8 @@
   ```bash
   source /work/stack/loadLSST.bash
   setup pfs_pipe2d
-  setup -j -r ../PIPE2D-1844/obs_pfs
-  setup -j -r ../PIPE2D-1844/drp_stella
+  setup -j -r /work/cloomis/claude/PIPE2D-1844/obs_pfs
+  setup -j -r /work/cloomis/claude/PIPE2D-1844/drp_stella
   ```
   Use the LSST-env `python` directly. Do **not** use `uv run` — it builds an isolated venv that cannot see the LSST conda site-packages.
 
@@ -1198,8 +1198,8 @@ Every shell that runs tests or `bin/` scripts must set up EUPS first:
 ```bash
 source /work/stack/loadLSST.bash
 setup pfs_pipe2d
-setup -j -r ../PIPE2D-1844/obs_pfs
-setup -j -r ../PIPE2D-1844/drp_stella
+setup -j -r /work/cloomis/claude/PIPE2D-1844/obs_pfs
+setup -j -r /work/cloomis/claude/PIPE2D-1844/drp_stella
 ```
 
 Use the LSST-env `python` directly. **Do not use `uv run`** — it builds an
