@@ -153,8 +153,11 @@ The single owner of the input and output roots.
   - `DEFAULT_OUTPUT_ROOT: Path` — `/work/cloomis/outputs/fitLinearity`
   - `repoRoot() -> Path`
   - `dataRoot() -> Path`
-  - `inputDir(det: str, dataRoot: Path | None = None) -> Path`
-  - `outputDir(det: str, cliTag: str, outRoot: Path | None = None) -> Path`
+  - `inputDir(det: str, root: Path | None = None) -> Path`
+  - `outputDir(det: str, cliTag: str, root: Path | None = None) -> Path`
+
+The `root` parameters are deliberately **not** named `dataRoot` / `outRoot`: a
+parameter named `dataRoot` would shadow the module-level `dataRoot()` function.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -198,7 +201,7 @@ def testInputDirIsRootSlashDet(monkeypatch, tmp_path):
 
 
 def testInputDirAcceptsExplicitRoot(tmp_path):
-    assert inputDir("18660", dataRoot=tmp_path) == tmp_path / "18660"
+    assert inputDir("18660", root=tmp_path) == tmp_path / "18660"
 
 
 def testDefaultOutputRoot():
@@ -206,14 +209,14 @@ def testDefaultOutputRoot():
 
 
 def testOutputDirIsDetSlashTagAndIsCreated(tmp_path):
-    out = outputDir("18734", "o5_dev0.45", outRoot=tmp_path)
+    out = outputDir("18734", "o5_dev0.45", root=tmp_path)
     assert out == tmp_path / "18734" / "o5_dev0.45"
     assert out.is_dir()
 
 
 def testOutputDirIsIdempotent(tmp_path):
-    outputDir("18734", "o4", outRoot=tmp_path)
-    out = outputDir("18734", "o4", outRoot=tmp_path)
+    outputDir("18734", "o4", root=tmp_path)
+    out = outputDir("18734", "o4", root=tmp_path)
     assert out.is_dir()
 
 
@@ -221,7 +224,7 @@ def testOutputDirNeverWritesUnderTheDataRoot(monkeypatch, tmp_path):
     dataDir = tmp_path / "jhu-data"
     outRoot = tmp_path / "outputs"
     monkeypatch.setenv("FITLINEARITY_DATA", str(dataDir))
-    out = outputDir("18734", "o4", outRoot=outRoot)
+    out = outputDir("18734", "o4", root=outRoot)
     assert dataDir not in out.parents
     assert not dataDir.exists()
 
@@ -275,28 +278,27 @@ def dataRoot() -> Path:
     return repoRoot().parent / "jhu-data"
 
 
-def inputDir(det: str, dataRoot: Path | None = None) -> Path:
+def inputDir(det: str, root: Path | None = None) -> Path:
     """Return the directory holding detector ``det``'s ``.npz`` ramps."""
     if not det:
         raise ValueError("detector id must be non-empty")
-    root = dataRoot if dataRoot is not None else globals()["dataRoot"]()
-    return Path(root) / det
+    base = root if root is not None else dataRoot()
+    return Path(base) / det
 
 
-def outputDir(det: str, cliTag: str, outRoot: Path | None = None) -> Path:
+def outputDir(det: str, cliTag: str, root: Path | None = None) -> Path:
     """Return (creating it) the output directory for one fit configuration."""
     if not det:
         raise ValueError("detector id must be non-empty")
-    root = Path(outRoot) if outRoot is not None else DEFAULT_OUTPUT_ROOT
-    out = root / det / cliTag
+    base = Path(root) if root is not None else DEFAULT_OUTPUT_ROOT
+    out = base / det / cliTag
     out.mkdir(parents=True, exist_ok=True)
     return out
 ```
 
-Note the `globals()["dataRoot"]()` call in `inputDir`: the parameter shadows the
-module-level function of the same name, so the lookup has to be explicit. If you
-find that too cute, rename the parameter to `root` — but then update the
-`testInputDirAcceptsExplicitRoot` keyword in Step 1 to match.
+The override parameters are named `root`, not `dataRoot` / `outRoot`: a
+parameter named `dataRoot` would shadow the module-level `dataRoot()` function
+and force an awkward `globals()` lookup to call it.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -898,10 +900,10 @@ def main() -> int:
 
     dataRoot = Path(args.data_root) if args.data_root else None
     outRoot = Path(args.out_root) if args.out_root else None
-    inputDir = paths.inputDir(args.det, dataRoot=dataRoot)
+    inputDir = paths.inputDir(args.det, root=dataRoot)
     if not inputDir.is_dir():
         parser.error(f"input directory does not exist: {inputDir}")
-    outDir = paths.outputDir(args.det, cliTag(config), outRoot=outRoot)
+    outDir = paths.outputDir(args.det, cliTag(config), root=outRoot)
 
     print(f"  in : {inputDir}", flush=True)
     print(f"  out: {outDir}", flush=True)
@@ -1298,8 +1300,8 @@ Verification (pytest green + end-to-end sanity check) → Tasks 1 and 6, Step 5.
 **Type consistency.** `cliTag(config)` is defined in Task 4 and called in Task 4's
 `bin/` script only. `loadCorrectedRamp(path, noPhotodiode=False)` is defined in
 Task 3 and consumed in Tasks 4 and 5 with that exact signature.
-`paths.inputDir(det, dataRoot=None)` / `paths.outputDir(det, cliTag, outRoot=None)`
-are defined in Task 2 and called with those keywords in Task 4.
+`paths.inputDir(det, root=None)` / `paths.outputDir(det, cliTag, root=None)`
+are defined in Task 2 and called with the `root=` keyword in Task 4.
 `runBenchmark` differs by module (Task 5's Interfaces block gives both
 signatures) — each has exactly one caller.
 
