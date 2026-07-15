@@ -8,53 +8,30 @@ By default the input is a synthetic ramp (linear with mild per-pixel
 saturation and read noise) so the script is self-contained and
 portable. Pass ``--data-path`` to benchmark on a real lab NPZ instead;
 the standard illumination-drift photodiode correction is applied.
-
-Usage:
-    uv run python examples/benchmark_fit_threading.py
-    uv run python examples/benchmark_fit_threading.py --data-path path/to.npz
 """
 
 from __future__ import annotations
 
-import argparse
-import sys
 import time
 from pathlib import Path
 
-import numpy as np
-
 import lsst.obs.pfs.h4Linearity as nirLinearity
-from _loader import loadNpz
-from lsst.obs.pfs.h4Linearity.types import Ramp
 
-from syntheticRamp import syntheticRamp
+from fitLinearity.loader import loadCorrectedRamp
+from fitLinearity.syntheticRamp import syntheticRamp
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--data-path", type=str, default=None,
-        help="Path to a lab NPZ ramp; if omitted, a synthetic 4096x4096x30 "
-             "ramp is generated",
-    )
-    args = parser.parse_args()
-
-    if args.data_path is None:
+def runBenchmark(dataPath: Path | None) -> int:
+    if dataPath is None:
         print("No --data-path provided; generating synthetic ramp ...", flush=True)
         correctedRamp = syntheticRamp()
     else:
-        dataPath = Path(args.data_path)
+        dataPath = Path(dataPath)
         if not dataPath.exists():
             print(f"Data file missing: {dataPath}")
             return 1
         print(f"Loading {dataPath} ...", flush=True)
-        ramp, photodiode = loadNpz(dataPath)
-        scale = (photodiode[0] / photodiode).astype(np.float32)
-        deltas = np.diff(ramp.reads, axis=0)
-        correctedReads = np.empty_like(ramp.reads)
-        correctedReads[0] = 0.0
-        np.cumsum(deltas * scale[:, None, None], axis=0, out=correctedReads[1:])
-        correctedRamp = Ramp(reads=correctedReads)
+        correctedRamp, _ = loadCorrectedRamp(dataPath)
     print(
         f"  shape={correctedRamp.reads.shape} dtype={correctedRamp.reads.dtype}",
         flush=True,
@@ -89,7 +66,3 @@ def main() -> int:
         speedup = baseline / elapsed if elapsed > 0 else float("nan")
         print(f"  {w:>8d}  {elapsed:>12.2f}  {speedup:>7.2f}x")
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
