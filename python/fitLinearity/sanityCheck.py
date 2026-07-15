@@ -883,7 +883,8 @@ def runPlot(config: SanityCheckConfig, inputDir: Path, outDir: Path) -> None:
     saturationKneeFromFits = summary.get("saturationKnee")
     badLinearityMultiplierFromFits = summary.get("badLinearityMedianMultiplier")
     # Detector ID for filenames: prefer the FITS header, fall back to the
-    # data-dir basename. Keeps plot files self-identifying when copied around.
+    # output directory's detector name. Keeps plot files self-identifying
+    # when copied around.
     det = str(summary.get("detector", det))
 
     print("Applying correction to input ramp ...", flush=True)
