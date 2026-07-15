@@ -19,16 +19,13 @@ import lsst.obs.pfs.h4Linearity as nirLinearity
 from fitLinearity.loader import loadCorrectedRamp
 from fitLinearity.syntheticRamp import syntheticRamp
 
-# Sizes within this fraction of the best time are considered tied for the
-# blockSize recommendation.
-_BASIN_TOLERANCE = 0.02
-
 
 def runBenchmark(
     dataPath: Path | None,
     sizes: list[int],
     trials: int,
     workers: int | None,
+    basinTolerance: float = 0.02,
 ) -> int:
     if dataPath is None:
         print("No --data-path provided; generating synthetic ramp ...", flush=True)
@@ -86,12 +83,12 @@ def runBenchmark(
         print(f"  {bs:>4d}x{bs:<5d}  {best:>10.2f}  {mean:>10.2f}")
 
     # Recommendation. The minimum time defines the basin; any size within
-    # `_BASIN_TOLERANCE` of it is statistically tied. Among ties we prefer
+    # `basinTolerance` of it is statistically tied. Among ties we prefer
     # the largest, which trades a hair of throughput for fewer tiles
     # (lower scheduling overhead, less peak memory in the as_completed
     # queue) and is more robust if workers/BLAS settings shift.
     bestTime = min(r[1] for r in results)
-    threshold = bestTime * (1.0 + _BASIN_TOLERANCE)
+    threshold = bestTime * (1.0 + basinTolerance)
     basin = [r for r in results if r[1] <= threshold]
     chosen = max(basin, key=lambda r: r[0])
 
@@ -103,7 +100,7 @@ def runBenchmark(
     if len(basin) > 1:
         basinSizes = sorted(r[0] for r in basin)
         print(
-            f"Basin (within {_BASIN_TOLERANCE:.0%} of fastest): "
+            f"Basin (within {basinTolerance:.0%} of fastest): "
             f"{basinSizes}",
             flush=True,
         )

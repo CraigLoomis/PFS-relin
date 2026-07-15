@@ -39,10 +39,16 @@ def main() -> int:
                         help="Trials per blockSize (default: 2)")
     parser.add_argument("--workers", type=int, default=None,
                         help="Worker count passed to fit(); None uses the auto default")
+    parser.add_argument(
+        "--basin-tolerance", type=float, default=0.02,
+        help="Sizes within this fraction of the best time are considered "
+             "tied for the recommendation (default: 0.02 = 2%%)",
+    )
     args = parser.parse_args()
     return runBenchmark(
         Path(args.data_path) if args.data_path else None,
         sizes=args.sizes, trials=args.trials, workers=args.workers,
+        basinTolerance=args.basin_tolerance,
     )
 
 
