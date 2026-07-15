@@ -1,7 +1,7 @@
 [project]
-name = "nirLinearity-validation"
+name = "fitLinearity"
 version = "0.1.0"
-description = "Validation harness for the lsst.obs.pfs.h4Linearity package (examples + tests)"
+description = "Validation harness for the lsst.obs.pfs.h4Linearity package"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -19,18 +19,14 @@ dev = [
 ]
 
 [tool.uv]
-# This project is the validation harness; the package under test
-# (lsst.obs.pfs.h4Linearity) lives in a sibling product and is loaded
-# via PYTHONPATH (see .env). uv should not try to build/install us.
+# The package under test (lsst.obs.pfs.h4Linearity) is an EUPS product in a
+# sibling checkout, not a pip dependency; uv should not try to build/install us.
 package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
-pythonpath = [
-    "examples",
-    "/Users/cloomis/claude/obs_pfs/PIPE2D-1844/python",
-]
+pythonpath = ["python"]
 
 [tool.ruff]
 line-length = 110

@@ -1,13 +1,12 @@
-"""Synthetic ramp generator shared by the example benchmarks.
+"""Synthetic ramp generation for the fit benchmarks.
 
 Produces a 4096x4096x30 cumulative-DN cube with plausible IR-detector
-behavior, so benchmarks can run without the lab NPZ being on disk.
+behavior, so benchmarks can run without a lab NPZ being on disk.
 """
 
 from __future__ import annotations
 
 import numpy as np
-
 from lsst.obs.pfs.h4Linearity.types import Ramp
 
 

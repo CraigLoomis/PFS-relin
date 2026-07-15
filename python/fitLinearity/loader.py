@@ -1,10 +1,8 @@
-"""Local development loader for the example / benchmark scripts.
+"""Loading of lab ``.npz`` ramps for the harness.
 
-Handles the photodiode-shape variants that turn up in the lab ``.npz``
-files (``N``, ``N+1``, or length-0); upstream ``h4Linearity.loaders``
-does not. Lives outside the upstream package so examples can import a
-single canonicalizing ``loadNpz`` without depending on upstream's
-development convenience loader.
+Handles the photodiode-shape variants that turn up in the lab files (``N``,
+``N+1``, or length-0), which upstream ``h4Linearity.loaders`` does not, and
+applies the standard illumination-drift photodiode correction.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-
 from lsst.obs.pfs.h4Linearity.types import Ramp
 
 
@@ -46,3 +43,26 @@ def loadNpz(path: str | Path) -> tuple[Ramp, np.ndarray]:
     reads[0] = 0.0
     np.cumsum(deltas, axis=0, out=reads[1:])
     return Ramp(reads=reads), photodiode
+
+
+def loadCorrectedRamp(
+    path: str | Path, noPhotodiode: bool = False
+) -> tuple[Ramp, np.ndarray]:
+    """Load a ramp and normalize it for illumination drift.
+
+    Each read's increment is scaled by the photodiode ratio relative to the
+    first sample, then re-accumulated, so a ramp taken under a drifting lamp
+    reads as one taken at the first read's illumination. The correction is
+    skipped when ``noPhotodiode`` is set or when the file records no photodiode
+    samples. Returns the corrected ramp and the raw photodiode array.
+    """
+    ramp, photodiode = loadNpz(path)
+    if noPhotodiode or photodiode.shape[0] == 0:
+        return ramp, photodiode
+
+    scale = (photodiode[0] / photodiode).astype(np.float32)  # (N,)
+    deltas = np.diff(ramp.reads, axis=0)  # (N, H, W)
+    correctedReads = np.empty_like(ramp.reads)
+    correctedReads[0] = 0.0
+    np.cumsum(deltas * scale[:, None, None], axis=0, out=correctedReads[1:])
+    return Ramp(reads=correctedReads), photodiode

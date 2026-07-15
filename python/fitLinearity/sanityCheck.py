@@ -1,20 +1,17 @@
-"""Sanity check: run nirLinearity on a real 4096x4096x29 lab ramp.
+"""Fit, save, reload, apply, and diagnose a linearity correction on a lab ramp.
 
-Loads the example NPZ, applies a standard photodiode correction
-(illumination-drift normalization to the first read), fits, saves FITS,
-reloads, applies, and reports residuals.
+Runs the full chain on a real 4096x4096 up-the-ramp exposure and reports
+residuals and per-population diagnostics.
 """
 
 from __future__ import annotations
 
-import argparse
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
 import lsst.obs.pfs.h4Linearity as nirLinearity
-from _loader import loadNpz
+import numpy as np
 from lsst.obs.pfs.h4Linearity.types import (
     BORDER_PIX,
     FIT_FAILED,
@@ -24,6 +21,54 @@ from lsst.obs.pfs.h4Linearity.types import (
     NON_MONOTONIC,
     Ramp,
 )
+
+from fitLinearity.loader import loadCorrectedRamp
+
+
+@dataclass
+class SanityCheckConfig:
+    """Fit and plot parameters for one sanity-check run."""
+
+    order: int
+    deviationLimit: float | None
+    deviationStart: float
+    saturationLevel: float | None
+    lowFluxFraction: float
+    saturationKnee: float | None
+    badLinearityMultiplier: float | None
+    noPhotodiode: bool
+    seed: int
+    nplot: int
+    plotFormat: str
+    fitrangeMin: float | None
+    fitrangeMax: float | None
+
+
+def cliTag(config: SanityCheckConfig) -> str:
+    """Build the output-directory name describing this run's fit configuration.
+
+    Only non-default parameters appear, so a default run tags as ``o4``.
+    """
+    tag = f"o{config.order}"
+    if config.noPhotodiode:
+        tag += "_pdOff"
+    if config.deviationLimit is not None:
+        tag += f"_dev{config.deviationLimit}"
+    if config.deviationStart != 0.5:
+        tag += f"_ds{config.deviationStart}"
+    if config.saturationLevel is not None:
+        tag += f"_sat{int(config.saturationLevel)}"
+    if config.lowFluxFraction != 0.5:
+        tag += f"_lff{config.lowFluxFraction}"
+    if config.saturationKnee != 0.5:
+        tag += f"_knee{config.saturationKnee}" if config.saturationKnee is not None else "_kneeOff"
+    if config.badLinearityMultiplier != 5.0:
+        tag += (
+            f"_blm{config.badLinearityMultiplier}"
+            if config.badLinearityMultiplier is not None
+            else "_blmOff"
+        )
+    return tag
 
 
 def _t(label: str, t0: float) -> float:
@@ -666,356 +711,244 @@ def _plotFitRangeSpatial(
     _saveOrAddPage(fig, outPath)
 
 
-def _loadInputRamp(dataDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
-    """Load the .npz ramp and apply photodiode correction.
-
-    Returns (correctedRamp, dataPath).
-    """
-    npzFiles = sorted(dataDir.glob("*.npz"))
+def _loadInputRamp(inputDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
+    """Load the single ``.npz`` ramp in ``inputDir``, photodiode-corrected."""
+    npzFiles = sorted(inputDir.glob("*.npz"))
     if not npzFiles:
-        raise FileNotFoundError(f"No .npz files found in {dataDir}")
+        raise FileNotFoundError(f"No .npz files found in {inputDir}")
     dataPath = npzFiles[0]
-
-    print(f"Loading {dataPath} ...", flush=True)
     t0 = time.perf_counter()
-    ramp, photodiode = loadNpz(dataPath)
-    t1 = _t("loadNpz", t0)
-
-    print(
-        f"  reads: shape={ramp.reads.shape} dtype={ramp.reads.dtype} "
-        f"min={ramp.reads.min():.4g} max={ramp.reads.max():.4g}",
-        flush=True,
-    )
-    if photodiode.size == 0:
-        print("  photodiode: (not recorded for this ramp)", flush=True)
-        noPhotodiode = True
-    else:
-        print(
-            f"  photodiode[0..2]={photodiode[:3]} photodiode[-1]={photodiode[-1]}",
-            flush=True,
-        )
-
-    if noPhotodiode:
-        print("  photodiode correction: DISABLED", flush=True)
-        correctedReads = ramp.reads
-    else:
-        # Scale each read's increment by the photodiode ratio, then re-accumulate.
-        scale = (photodiode[0] / photodiode).astype(np.float32)  # (N,)
+    print(f"Loading {dataPath} ...", flush=True)
+    correctedRamp, photodiode = loadCorrectedRamp(dataPath, noPhotodiode=noPhotodiode)
+    if photodiode.shape[0] and not noPhotodiode:
+        scale = photodiode[0] / photodiode
         print(
             f"  photodiode scale range: min={scale.min():.6f} max={scale.max():.6f}",
             flush=True,
         )
-        deltas = np.diff(ramp.reads, axis=0)  # (N, H, W)
-        correctedReads = np.empty_like(ramp.reads)
-        correctedReads[0] = 0.0
-        np.cumsum(deltas * scale[:, None, None], axis=0, out=correctedReads[1:])
-
-    correctedRamp = Ramp(reads=correctedReads)
-    _t("photodiode correction applied" if not noPhotodiode else "photodiode correction skipped", t1)
-
+    _t("load + photodiode correction", t0)
     return correctedRamp, dataPath
 
 
-def _buildTag(summary: dict, pdTag: str) -> str:
-    """Build a filename tag from the fit parameters stored in the FITS header."""
-    order = summary.get("order", "?")
-    tag = f"o{order}{pdTag}"
-    devLimit = summary.get("deviationLimit")
-    if devLimit is not None:
-        tag += f"_dev{devLimit}"
-    satLevel = summary.get("saturationLevel")
-    if satLevel is not None:
-        tag += f"_sat{int(satLevel)}"
-    return tag
+def runFit(config: SanityCheckConfig, inputDir: Path, outDir: Path) -> None:
+    """Fit the ramp in ``inputDir`` and write the correction FITS to ``outDir``."""
+    det = outDir.parent.name
+    fitsPath = outDir / f"{det}_linearity.fits"
 
+    t0 = time.perf_counter()
+    correctedRamp, dataPath = _loadInputRamp(inputDir, config.noPhotodiode)
+    H, W = correctedRamp.reads.shape[1:]
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Sanity check nirLinearity on a real ramp")
-    parser.add_argument("--fit", action="store_true",
-                        help="Fit and save a linearity correction FITS file")
-    parser.add_argument("--plot", action="store_true",
-                        help="Generate diagnostic plots (reads existing FITS + input data)")
-    parser.add_argument("--plot-format", type=str, default="png",
-                        help="Plot file format: png, pdf, svg (default: png)")
-    parser.add_argument("--nplot", type=int, default=1000,
-                        help="Number of pixels to plot (default: 1000)")
-    parser.add_argument("--deviation-limit", type=float, default=None,
-                        help="Fractional deviation threshold for fit range clipping (default: None)")
-    parser.add_argument("--deviation-start", type=float, default=0.5,
-                        help="Fraction of reads before deviation limit is applied (default: 0.5)")
-    parser.add_argument("--order", type=int, default=4,
-                        help="Polynomial order (default: 4)")
-    parser.add_argument("--saturation-level", type=float, default=None,
-                        help="Saturation level in DN (default: None)")
-    parser.add_argument("--seed", type=int, default=0,
-                        help="RNG seed for pixel sampling (default: 0)")
-    parser.add_argument("--no-photodiode", action="store_true",
-                        help="Skip photodiode illumination-drift correction")
-    parser.add_argument("--low-flux-fraction", type=float, default=0.5,
-                        help="Reject pixels with refDelta below this fraction of median rate (default: 0.5)")
-    parser.add_argument("--saturation-knee", type=float, default=0.5,
-                        help="Per-pixel knee: first delta < saturationKnee × refDelta truncates "
-                             "the fit window from that read on (default: 0.5; -1 to disable)")
-    parser.add_argument("--bad-linearity-multiplier", type=float, default=5.0,
-                        help="Flag HIGH_FIT_RESIDUAL when residualRms > multiplier × median(good "
-                             "residualRms) (default: 5.0; -1 to disable)")
-    parser.add_argument("--data-dir", type=str, default="examples/linearity/18734",
-                        help="Directory containing the .npz ramp file (default: examples/linearity/18734)")
-    parser.add_argument("--fitrange-min", type=float, default=None,
-                        help="Lower bound (DN) for the fit-range histogram (default: auto p0.05)")
-    parser.add_argument("--fitrange-max", type=float, default=None,
-                        help="Upper bound (DN) for the fit-range histogram (default: auto p99.95)")
-    args = parser.parse_args()
+    # Sample pixel indices from all interior pixels BEFORE fitting, so
+    # the same pixels are reported regardless of clipping parameters.
+    interior = np.ones((H, W), dtype=bool)
+    interior[:4, :] = False
+    interior[-4:, :] = False
+    interior[:, :4] = False
+    interior[:, -4:] = False
+    rng = np.random.default_rng(config.seed)
+    interiorIdx = np.flatnonzero(interior.ravel())
+    sampleIdx = rng.choice(interiorIdx, size=min(10000, len(interiorIdx)), replace=False)
+    rows = sampleIdx // W
+    cols = sampleIdx % W
 
-    if not args.fit and not args.plot:
-        args.fit = True
-
-    dataDir = Path(args.data_dir)
-    detName = dataDir.name
-    pdTag = "_pdOff" if args.no_photodiode else ""
-
-    # Build config tag from CLI args for directory naming.
-    cliTag = f"o{args.order}{pdTag}"
-    if args.deviation_limit is not None:
-        cliTag += f"_dev{args.deviation_limit}"
-    if args.deviation_start != 0.5:
-        cliTag += f"_ds{args.deviation_start}"
-    if args.saturation_level is not None:
-        cliTag += f"_sat{int(args.saturation_level)}"
-    if args.low_flux_fraction != 0.5:
-        cliTag += f"_lff{args.low_flux_fraction}"
-    # CLI value -1 maps to None at the upstream API (disables the gate).
-    saturationKnee = None if args.saturation_knee < 0 else args.saturation_knee
-    badLinearityMultiplier = (
-        None if args.bad_linearity_multiplier < 0 else args.bad_linearity_multiplier
+    from lsst.obs.pfs.h4Linearity.models import PolynomialModel
+    model = PolynomialModel(order=config.order)
+    print(f"Fitting (order={config.order}) ...", flush=True)
+    correction = nirLinearity.fit(
+        [correctedRamp],
+        model=model,
+        deviationLimit=config.deviationLimit,
+        deviationStart=config.deviationStart,
+        saturationLevel=config.saturationLevel,
+        lowFluxFraction=config.lowFluxFraction,
+        saturationKnee=config.saturationKnee,
+        badLinearityMedianMultiplier=config.badLinearityMultiplier,
     )
-    if saturationKnee != 0.5:
-        cliTag += f"_knee{saturationKnee}" if saturationKnee is not None else "_kneeOff"
-    if badLinearityMultiplier != 5.0:
-        cliTag += (
-            f"_blm{badLinearityMultiplier}"
-            if badLinearityMultiplier is not None
-            else "_blmOff"
-        )
-    outDir = dataDir / cliTag
-    fitsPath = outDir / f"{detName}_linearity.fits"
+    t1 = _t("nirLinearity.fit", t0)
 
-    # ---- Fit ----
-    if args.fit:
-        t0 = time.perf_counter()
-        correctedRamp, dataPath = _loadInputRamp(dataDir, args.no_photodiode)
-        H, W = correctedRamp.reads.shape[1:]
+    print("Summary diagnostics:", flush=True)
+    for k, v in correction.diagnostics.summary.items():
+        print(f"  {k:40s} {v}", flush=True)
 
-        # Sample pixel indices from all interior pixels BEFORE fitting, so
-        # the same pixels are reported regardless of clipping parameters.
-        interior = np.ones((H, W), dtype=bool)
-        interior[:4, :] = False
-        interior[-4:, :] = False
-        interior[:, :4] = False
-        interior[:, -4:] = False
-        rng = np.random.default_rng(args.seed)
-        interiorIdx = np.flatnonzero(interior.ravel())
-        sampleIdx = rng.choice(interiorIdx, size=min(10000, len(interiorIdx)), replace=False)
-        rows = sampleIdx // W
-        cols = sampleIdx % W
+    print(
+        f"  fitMin: min={correction.fitMin.min():.3g} "
+        f"max={correction.fitMin.max():.3g}",
+        flush=True,
+    )
+    print(
+        f"  fitMax: min={correction.fitMax.min():.3g} "
+        f"max={correction.fitMax.max():.3g}",
+        flush=True,
+    )
 
-        from lsst.obs.pfs.h4Linearity.models import PolynomialModel
-        model = PolynomialModel(order=args.order)
-        print(f"Fitting (order={args.order}) ...", flush=True)
-        correction = nirLinearity.fit(
-            [correctedRamp],
-            model=model,
-            deviationLimit=args.deviation_limit,
-            deviationStart=args.deviation_start,
-            saturationLevel=args.saturation_level,
-            lowFluxFraction=args.low_flux_fraction,
-            saturationKnee=saturationKnee,
-            badLinearityMedianMultiplier=badLinearityMultiplier,
-        )
-        t1 = _t("nirLinearity.fit", t0)
+    # Extract visit number from filename (e.g. 18734_164220.npz -> 164220)
+    parts = dataPath.stem.split("_", 1)
+    if len(parts) == 2:
+        correction.diagnostics.summary["visit"] = parts[1]
+        correction.diagnostics.summary["detector"] = parts[0]
 
-        print("Summary diagnostics:", flush=True)
-        for k, v in correction.diagnostics.summary.items():
-            print(f"  {k:40s} {v}", flush=True)
+    print(f"Saving to {fitsPath} ...", flush=True)
+    nirLinearity.saveFits(fitsPath, correction)
+    t1 = _t("nirLinearity.saveFits", t1)
+    print(f"  FITS size: {fitsPath.stat().st_size / 1e6:.1f} MB", flush=True)
 
-        print(
-            f"  fitMin: min={correction.fitMin.min():.3g} "
-            f"max={correction.fitMin.max():.3g}",
-            flush=True,
-        )
-        print(
-            f"  fitMax: min={correction.fitMax.min():.3g} "
-            f"max={correction.fitMax.max():.3g}",
-            flush=True,
-        )
+    print("Reloading FITS ...", flush=True)
+    loaded = nirLinearity.loadFits(fitsPath)
+    t1 = _t("nirLinearity.loadFits", t1)
 
-        # Extract visit number from filename (e.g. 18734_164220.npz -> 164220)
-        parts = dataPath.stem.split("_", 1)
-        if len(parts) == 2:
-            correction.diagnostics.summary["visit"] = parts[1]
-            correction.diagnostics.summary["detector"] = parts[0]
+    coefMatch = np.array_equal(loaded.coefficients, correction.coefficients)
+    bpMatch = np.array_equal(loaded.badPixelMask, correction.badPixelMask)
+    print(f"  coefficients bitwise-equal:   {coefMatch}", flush=True)
+    print(f"  badPixelMask bitwise-equal:   {bpMatch}", flush=True)
 
-        outDir.mkdir(exist_ok=True)
-        print(f"Saving to {fitsPath} ...", flush=True)
-        nirLinearity.saveFits(fitsPath, correction)
-        t1 = _t("nirLinearity.saveFits", t1)
-        print(f"  FITS size: {fitsPath.stat().st_size / 1e6:.1f} MB", flush=True)
+    print("Applying correction to input ramp ...", flush=True)
+    result = _applyBridge(loaded, correctedRamp)
+    t1 = _t("nirLinearity.apply", t1)
 
-        print("Reloading FITS ...", flush=True)
-        loaded = nirLinearity.loadFits(fitsPath)
-        t1 = _t("nirLinearity.loadFits", t1)
+    good = loaded.badPixelMask == 0
+    nGood = int(good.sum())
+    print(
+        f"  good pixels: {nGood}/{good.size} "
+        f"({100 * nGood / good.size:.2f}%)",
+        flush=True,
+    )
 
-        coefMatch = np.array_equal(loaded.coefficients, correction.coefficients)
-        bpMatch = np.array_equal(loaded.badPixelMask, correction.badPixelMask)
-        print(f"  coefficients bitwise-equal:   {coefMatch}", flush=True)
-        print(f"  badPixelMask bitwise-equal:   {bpMatch}", flush=True)
+    sampleGood = good[rows, cols]
+    goodRows = rows[sampleGood]
+    goodCols = cols[sampleGood]
+    nGoodSampled = len(goodRows)
 
-        print("Applying correction to input ramp ...", flush=True)
-        result = _applyBridge(loaded, correctedRamp)
-        t1 = _t("nirLinearity.apply", t1)
+    trajectories = result.cumulativeLinear[:, goodRows, goodCols]
+    n = np.arange(1, trajectories.shape[0] + 1, dtype=np.float64)
 
-        good = loaded.badPixelMask == 0
-        nGood = int(good.sum())
-        print(
-            f"  good pixels: {nGood}/{good.size} "
-            f"({100 * nGood / good.size:.2f}%)",
-            flush=True,
-        )
+    slopes = np.einsum("n,nk->k", n, trajectories) / np.sum(n * n)
+    residuals = trajectories - slopes[None, :] * n[:, None]
+    rms = np.sqrt(np.mean(residuals**2, axis=0))
+    print(
+        f"  per-pixel linearity RMS over {nGoodSampled} sampled good pixels:",
+        flush=True,
+    )
+    print(f"    median={np.median(rms):.4f}  p95={np.percentile(rms, 95):.4f}  max={rms.max():.4f}", flush=True)
+    print(
+        f"  per-pixel slope over sampled pixels: "
+        f"median={np.median(slopes):.3f} "
+        f"p95={np.percentile(slopes, 95):.3f}",
+        flush=True,
+    )
 
-        sampleGood = good[rows, cols]
-        goodRows = rows[sampleGood]
-        goodCols = cols[sampleGood]
-        nGoodSampled = len(goodRows)
+    from lsst.obs.pfs.h4Linearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE
+    belowCount = int((result.badPixelMask & BELOW_VALID_RANGE > 0).sum())
+    aboveCount = int((result.badPixelMask & ABOVE_VALID_RANGE > 0).sum())
+    nPix = result.badPixelMask.size
+    print(f"  below-range pixel fraction: {belowCount / nPix:.4f}", flush=True)
+    print(f"  above-range pixel fraction: {aboveCount / nPix:.4f}", flush=True)
+    _t("done (fit)", t0)
 
-        trajectories = result.cumulativeLinear[:, goodRows, goodCols]
-        n = np.arange(1, trajectories.shape[0] + 1, dtype=np.float64)
 
-        slopes = np.einsum("n,nk->k", n, trajectories) / np.sum(n * n)
-        residuals = trajectories - slopes[None, :] * n[:, None]
-        rms = np.sqrt(np.mean(residuals**2, axis=0))
-        print(
-            f"  per-pixel linearity RMS over {nGoodSampled} sampled good pixels:",
-            flush=True,
-        )
-        print(f"    median={np.median(rms):.4f}  p95={np.percentile(rms, 95):.4f}  max={rms.max():.4f}", flush=True)
-        print(
-            f"  per-pixel slope over sampled pixels: "
-            f"median={np.median(slopes):.3f} "
-            f"p95={np.percentile(slopes, 95):.3f}",
-            flush=True,
+def runPlot(config: SanityCheckConfig, inputDir: Path, outDir: Path) -> None:
+    """Plot diagnostics for the correction already written to ``outDir``."""
+    det = outDir.parent.name
+    fitsPath = outDir / f"{det}_linearity.fits"
+
+    t0 = time.perf_counter()
+    if not fitsPath.exists():
+        raise FileNotFoundError(
+            f"No FITS file at {fitsPath}; run with --fit first"
         )
 
-        from lsst.obs.pfs.h4Linearity.types import ABOVE_VALID_RANGE, BELOW_VALID_RANGE
-        belowCount = int((result.badPixelMask & BELOW_VALID_RANGE > 0).sum())
-        aboveCount = int((result.badPixelMask & ABOVE_VALID_RANGE > 0).sum())
-        nPix = result.badPixelMask.size
-        print(f"  below-range pixel fraction: {belowCount / nPix:.4f}", flush=True)
-        print(f"  above-range pixel fraction: {aboveCount / nPix:.4f}", flush=True)
-        _t("done (fit)", t0)
+    correctedRamp, _ = _loadInputRamp(inputDir, config.noPhotodiode)
+    H, W = correctedRamp.reads.shape[1:]
 
-    # ---- Plot ----
-    if args.plot:
-        t0 = time.perf_counter()
-        if not fitsPath.exists():
-            raise FileNotFoundError(
-                f"No FITS file at {fitsPath}; run with --fit first"
-            )
+    interior = np.ones((H, W), dtype=bool)
+    interior[:4, :] = False
+    interior[-4:, :] = False
+    interior[:, :4] = False
+    interior[:, -4:] = False
+    rng = np.random.default_rng(config.seed)
+    interiorIdx = np.flatnonzero(interior.ravel())
+    sampleIdx = rng.choice(interiorIdx, size=min(10000, len(interiorIdx)), replace=False)
+    rows = sampleIdx // W
+    cols = sampleIdx % W
 
-        correctedRamp, _ = _loadInputRamp(dataDir, args.no_photodiode)
-        H, W = correctedRamp.reads.shape[1:]
+    print(f"Loading {fitsPath} ...", flush=True)
+    loaded = nirLinearity.loadFits(fitsPath)
+    t1 = _t("nirLinearity.loadFits", t0)
 
-        interior = np.ones((H, W), dtype=bool)
-        interior[:4, :] = False
-        interior[-4:, :] = False
-        interior[:, :4] = False
-        interior[:, -4:] = False
-        rng = np.random.default_rng(args.seed)
-        interiorIdx = np.flatnonzero(interior.ravel())
-        sampleIdx = rng.choice(interiorIdx, size=min(10000, len(interiorIdx)), replace=False)
-        rows = sampleIdx // W
-        cols = sampleIdx % W
+    summary = loaded.diagnostics.summary
+    order = summary.get("order", "?")
+    deviationLimit = summary.get("deviationLimit")
+    saturationLevel = summary.get("saturationLevel")
+    nRefReads = summary.get("nRefReads", 5)
+    saturationKneeFromFits = summary.get("saturationKnee")
+    badLinearityMultiplierFromFits = summary.get("badLinearityMedianMultiplier")
+    # Detector ID for filenames: prefer the FITS header, fall back to the
+    # output directory's detector name. Keeps plot files self-identifying
+    # when copied around.
+    det = str(summary.get("detector", det))
 
-        print(f"Loading {fitsPath} ...", flush=True)
-        loaded = nirLinearity.loadFits(fitsPath)
-        t1 = _t("nirLinearity.loadFits", t0)
+    print("Applying correction to input ramp ...", flush=True)
+    result = _applyBridge(loaded, correctedRamp)
+    t1 = _t("nirLinearity.apply", t1)
 
-        summary = loaded.diagnostics.summary
-        order = summary.get("order", "?")
-        deviationLimit = summary.get("deviationLimit")
-        saturationLevel = summary.get("saturationLevel")
-        nRefReads = summary.get("nRefReads", 5)
-        saturationKneeFromFits = summary.get("saturationKnee")
-        badLinearityMultiplierFromFits = summary.get("badLinearityMedianMultiplier")
-        # Detector ID for filenames: prefer the FITS header, fall back to the
-        # data-dir basename. Keeps plot files self-identifying when copied around.
-        detId = str(summary.get("detector", detName))
+    rawCum = correctedRamp.reads.astype(np.float32)
 
-        print("Applying correction to input ramp ...", flush=True)
-        result = _applyBridge(loaded, correctedRamp)
-        t1 = _t("nirLinearity.apply", t1)
+    print("Generating diagnostic plots ...", flush=True)
+    rate_ = float(np.median(correctedRamp.reads[2] - correctedRamp.reads[1]))
+    detector_ = str(summary.get("detector", det))
+    visit_ = str(summary.get("visit", ""))
 
-        rawCum = correctedRamp.reads.astype(np.float32)
+    def _plotAll(target, fitRangeTarget, spatialTarget):
+        _plotDiagnostic(
+            rawCum=rawCum,
+            linCum=result.cumulativeLinear,
+            fitMin=loaded.fitMin,
+            fitMax=loaded.fitMax,
+            badPixelMask=loaded.badPixelMask,
+            rows=rows,
+            cols=cols,
+            rate=rate_,
+            outPath=target,
+            nPlot=config.nplot,
+            order=order,
+            deviationLimit=deviationLimit,
+            nRefReads=nRefReads,
+            saturationLevel=saturationLevel,
+            saturationKnee=saturationKneeFromFits,
+            badLinearityMedianMultiplier=badLinearityMultiplierFromFits,
+            seed=config.seed,
+            detector=detector_,
+            visit=visit_,
+        )
+        _plotFitRange(
+            fitMax=loaded.fitMax,
+            badPixelMask=loaded.badPixelMask,
+            rawCum=rawCum,
+            outPath=fitRangeTarget,
+            loOverride=config.fitrangeMin,
+            hiOverride=config.fitrangeMax,
+        )
+        _plotFitRangeSpatial(
+            fitMax=loaded.fitMax,
+            badPixelMask=loaded.badPixelMask,
+            outPath=spatialTarget,
+            loOverride=config.fitrangeMin,
+            hiOverride=config.fitrangeMax,
+            detector=detector_,
+            visit=visit_,
+        )
 
-        print("Generating diagnostic plots ...", flush=True)
-        rate_ = float(np.median(correctedRamp.reads[2] - correctedRamp.reads[1]))
-        detector_ = str(summary.get("detector", detName))
-        visit_ = str(summary.get("visit", ""))
-
-        def _plotAll(target, fitRangeTarget, spatialTarget):
-            _plotDiagnostic(
-                rawCum=rawCum,
-                linCum=result.cumulativeLinear,
-                fitMin=loaded.fitMin,
-                fitMax=loaded.fitMax,
-                badPixelMask=loaded.badPixelMask,
-                rows=rows,
-                cols=cols,
-                rate=rate_,
-                outPath=target,
-                nPlot=args.nplot,
-                order=order,
-                deviationLimit=deviationLimit,
-                nRefReads=nRefReads,
-                saturationLevel=saturationLevel,
-                saturationKnee=saturationKneeFromFits,
-                badLinearityMedianMultiplier=badLinearityMultiplierFromFits,
-                seed=args.seed,
-                detector=detector_,
-                visit=visit_,
-            )
-            _plotFitRange(
-                fitMax=loaded.fitMax,
-                badPixelMask=loaded.badPixelMask,
-                rawCum=rawCum,
-                outPath=fitRangeTarget,
-                loOverride=args.fitrange_min,
-                hiOverride=args.fitrange_max,
-            )
-            _plotFitRangeSpatial(
-                fitMax=loaded.fitMax,
-                badPixelMask=loaded.badPixelMask,
-                outPath=spatialTarget,
-                loOverride=args.fitrange_min,
-                hiOverride=args.fitrange_max,
-                detector=detector_,
-                visit=visit_,
-            )
-
-        if args.plot_format == "pdf":
-            # Multi-page PDF — all three diagnostics in one file per detector.
-            from matplotlib.backends.backend_pdf import PdfPages
-            combinedPath = outDir / f"diagnostic_{detId}.pdf"
-            with PdfPages(combinedPath) as pdf:
-                _plotAll(pdf, pdf, pdf)
-            print(f"  Saved {combinedPath}", flush=True)
-        else:
-            _plotAll(
-                outDir / f"diagnostic_{detId}.{args.plot_format}",
-                outDir / f"diagnostic_fit_range_{detId}.{args.plot_format}",
-                outDir / f"diagnostic_fit_range_spatial_{detId}.{args.plot_format}",
-            )
-        _t("done (plot)", t0)
-
-
-if __name__ == "__main__":
-    main()
+    if config.plotFormat == "pdf":
+        # Multi-page PDF — all three diagnostics in one file per detector.
+        from matplotlib.backends.backend_pdf import PdfPages
+        combinedPath = outDir / f"diagnostic_{det}.pdf"
+        with PdfPages(combinedPath) as pdf:
+            _plotAll(pdf, pdf, pdf)
+        print(f"  Saved {combinedPath}", flush=True)
+    else:
+        _plotAll(
+            outDir / f"diagnostic_{det}.{config.plotFormat}",
+            outDir / f"diagnostic_fit_range_{det}.{config.plotFormat}",
+            outDir / f"diagnostic_fit_range_spatial_{det}.{config.plotFormat}",
+        )
+    _t("done (plot)", t0)
