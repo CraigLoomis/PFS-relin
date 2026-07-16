@@ -85,6 +85,12 @@ def _cumulativeFromDeltas(deltaRows):
     return cube
 
 
+def _openRange(cube):
+    """Per-pixel ``(fitMin, fitMax)`` wide enough to keep every read in range."""
+    hw = cube.shape[1:]
+    return np.full(hw, -1e30, dtype=np.float32), np.full(hw, 1e30, dtype=np.float32)
+
+
 def testFoldRateStabilityFlagsOnlyTheUnstablePixel():
     # 3 pixels, 7 deltas each. Halves split [0:3] / [3:7].
     #   pixel 0: constant rate 10 -> stable
@@ -95,8 +101,10 @@ def testFoldRateStabilityFlagsOnlyTheUnstablePixel():
         [10, 10, 10, 100, 100, 100, 100],
         [10, 10, 10, 10, 10, 10, 10],
     ])
+    fitMin, fitMax = _openRange(cube)
     badPixelMask = np.array([[0, 0, 0x0001]], dtype=np.int32)
-    folded, result = _foldRateStability(cube, badPixelMask, threshold=0.20, rateFloorADU=5.0)
+    folded, result = _foldRateStability(cube, cube, fitMin, fitMax, badPixelMask,
+                                        threshold=0.20, rateFloorADU=5.0)
 
     assert folded[0, 0] == 0                       # stable good pixel: untouched
     assert folded[0, 1] == RATE_UNSTABLE           # unstable good pixel: flagged
@@ -108,7 +116,36 @@ def testFoldRateStabilityFlagsOnlyTheUnstablePixel():
 def testFoldRateStabilityShortRampSkips():
     # 4 deltas < 2*minDeltasPerSegment (6): gate cannot form two halves.
     cube = _cumulativeFromDeltas([[10, 10, 10, 10]])
+    fitMin, fitMax = _openRange(cube)
     badPixelMask = np.array([[0]], dtype=np.int32)
-    folded, result = _foldRateStability(cube, badPixelMask, threshold=0.20, rateFloorADU=5.0)
+    folded, result = _foldRateStability(cube, cube, fitMin, fitMax, badPixelMask,
+                                        threshold=0.20, rateFloorADU=5.0)
     assert result is None
     assert folded[0, 0] == 0                       # nothing flagged
+
+
+def testFoldRateStabilityClipsAboveFitMax():
+    # One pixel: linearized rate is a constant 10 while the raw signal is in
+    # range, then crashes to -50 on the last two reads, whose raw signal exceeds
+    # fitMax. That crash is the only thing that would trip the gate, and it sits
+    # out of range.
+    linCube = _cumulativeFromDeltas([[10] * 11 + [-50, -50]])   # N = 14
+    rawCube = _cumulativeFromDeltas([[10] * 13])                # raw rises linearly to 130
+    fitMin = np.full((1, 1), -1e30, dtype=np.float32)
+    badPixelMask = np.array([[0]], dtype=np.int32)
+
+    # Clipped at fitMax=115: the last two reads (raw 120, 130) are excluded, so
+    # both halves see only the constant-rate region -> stable -> not flagged.
+    fitMaxClip = np.full((1, 1), 115.0, dtype=np.float32)
+    folded, result = _foldRateStability(linCube, rawCube, fitMin, fitMaxClip, badPixelMask,
+                                        threshold=0.20, rateFloorADU=5.0)
+    assert folded[0, 0] == 0
+    assert result is not None and result.nRejected == 0
+
+    # Without the clip (fitMax wide open) the same ramp's out-of-range droop
+    # enters the second half and the pixel is rejected -- confirming the clip,
+    # not the data, is what spares it.
+    fitMaxOpen = np.full((1, 1), 1e30, dtype=np.float32)
+    foldedOpen, _ = _foldRateStability(linCube, rawCube, fitMin, fitMaxOpen, badPixelMask,
+                                       threshold=0.20, rateFloorADU=5.0)
+    assert foldedOpen[0, 0] == RATE_UNSTABLE

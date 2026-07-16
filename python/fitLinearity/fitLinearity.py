@@ -739,19 +739,26 @@ def _loadInputRamp(inputDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
     return correctedRamp, dataPath
 
 
-def _foldRateStability(cumulativeLinear, badPixelMask, threshold, rateFloorADU):
+def _foldRateStability(cumulativeLinear, rawCumulative, fitMin, fitMax, badPixelMask,
+                       threshold, rateFloorADU):
     """Run the split-half rate-stability gate on the linearized ramp and fold it in.
 
     ``cumulativeLinear`` is the linearized cumulative ramp in ``(N, H, W)``; its
-    per-read deltas are the rate the gate tests for constancy. Only pixels good
-    in ``badPixelMask`` are tested. Returns ``(foldedMask, result)`` where
-    ``foldedMask`` is a copy of ``badPixelMask`` with ``RATE_UNSTABLE`` OR-ed in
-    at rejected pixels. A ramp too short to form two testable halves is reported
-    and skipped, returning ``(badPixelMask.copy(), None)``.
+    per-read deltas are the rate the gate tests for constancy. Reads whose raw
+    signal ``rawCumulative`` lies outside the per-pixel fit range
+    ``[fitMin, fitMax]`` are excluded from the test, so the gate sees only the
+    clean-linear part of the ramp and not the near-saturation extrapolation.
+    Only pixels good in ``badPixelMask`` are tested. Returns
+    ``(foldedMask, result)`` where ``foldedMask`` is a copy of ``badPixelMask``
+    with ``RATE_UNSTABLE`` OR-ed in at rejected pixels. A ramp too short to form
+    two testable halves is reported and skipped, returning
+    ``(badPixelMask.copy(), None)``.
     """
     linDeltas = np.moveaxis(np.diff(cumulativeLinear, axis=0), 0, -1)  # (H, W, N-1)
     good = badPixelMask == 0
-    flagMask = np.zeros(linDeltas.shape, dtype=bool)
+    # A delta is testable only when both of its bracketing reads are in range.
+    inRange = (rawCumulative >= fitMin) & (rawCumulative <= fitMax)    # (N, H, W)
+    flagMask = np.moveaxis(~(inRange[:-1] & inRange[1:]), 0, -1)       # (H, W, N-1)
     try:
         result = detectRateInstability(
             linDeltas, flagMask, goodPixelMask=good,
@@ -763,6 +770,50 @@ def _foldRateStability(cumulativeLinear, badPixelMask, threshold, rateFloorADU):
     folded = badPixelMask.copy()
     folded[result.rejectMask] |= RATE_UNSTABLE
     return folded, result
+
+
+def _applyRateStability(loaded, cumulativeLinear, rawCumulative, config, fitsPath):
+    """Fold the rate-stability gate into ``loaded`` and re-save the FITS.
+
+    Runs :func:`_foldRateStability` on the linearized ramp (clipping the test to
+    the ``[fitMin, fitMax]`` window of ``rawCumulative``), updates
+    ``loaded.badPixelMask`` in place, reports the outcome, records the run's
+    threshold/floor and the unstable count in the summary header, and re-saves.
+    Returns the ``RateStabilityResult``, or ``None`` if the ramp was too short.
+    """
+    print(
+        f"Rate-stability gate (threshold={config.rateStabilityThreshold}, "
+        f"floor={config.rateStabilityFloor}) ...",
+        flush=True,
+    )
+    nGood = int((loaded.badPixelMask == 0).sum())  # good pixels the gate tested, pre-fold
+    folded, result = _foldRateStability(
+        cumulativeLinear, rawCumulative, loaded.fitMin, loaded.fitMax, loaded.badPixelMask,
+        threshold=config.rateStabilityThreshold,
+        rateFloorADU=config.rateStabilityFloor,
+    )
+    if result is None:
+        return None
+
+    loaded.badPixelMask[...] = folded
+    finiteFraction = result.fraction[np.isfinite(result.fraction)]
+    p50 = float(np.percentile(finiteFraction, 50)) if finiteFraction.size else float("nan")
+    p95 = float(np.percentile(finiteFraction, 95)) if finiteFraction.size else float("nan")
+    print(
+        f"  RATE_UNSTABLE: {result.nRejected} rejected "
+        f"({100 * result.nRejected / max(nGood, 1):.3f}% of good), "
+        f"{result.nUntestable} untestable",
+        flush=True,
+    )
+    print(f"  fraction p50={p50:.4f} p95={p95:.4f}", flush=True)
+
+    loaded.diagnostics.summary["rateStabilityThreshold"] = config.rateStabilityThreshold
+    loaded.diagnostics.summary["rateStabilityFloor"] = config.rateStabilityFloor
+    loaded.diagnostics.summary["rateUnstableCount"] = result.nRejected
+
+    print(f"Re-saving {fitsPath} with RATE_UNSTABLE flags ...", flush=True)
+    nirLinearity.saveFits(fitsPath, loaded)
+    return result
 
 
 def runFit(config: SanityCheckConfig, inputDir: Path, outDir: Path) -> None:
@@ -878,6 +929,8 @@ def runFit(config: SanityCheckConfig, inputDir: Path, outDir: Path) -> None:
     nPix = result.badPixelMask.size
     print(f"  below-range pixel fraction: {belowCount / nPix:.4f}", flush=True)
     print(f"  above-range pixel fraction: {aboveCount / nPix:.4f}", flush=True)
+    if config.rateStability:
+        _applyRateStability(loaded, result.cumulativeLinear, correctedRamp.reads, config, fitsPath)
     _t("done (fit)", t0)
 
 

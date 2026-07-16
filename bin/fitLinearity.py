@@ -49,6 +49,13 @@ def main() -> int:
     parser.add_argument("--bad-linearity-multiplier", type=float, default=5.0,
                         help="Flag HIGH_FIT_RESIDUAL when residualRms > multiplier × median(good "
                              "residualRms) (default: 5.0; -1 to disable)")
+    parser.add_argument("--rate-stability", action="store_true",
+                        help="Run the split-half rate-stability gate after the fit and "
+                             "fold RATE_UNSTABLE into the saved correction")
+    parser.add_argument("--rate-stability-threshold", type=float, default=0.20,
+                        help="Fractional half-vs-half rate-disagreement threshold (default: 0.20)")
+    parser.add_argument("--rate-stability-floor", type=float, default=5.0,
+                        help="Rate-floor DN in the disagreement denominator (default: 5.0)")
     parser.add_argument("--fitrange-min", type=float, default=None,
                         help="Lower bound (DN) for the fit-range histogram (default: auto p0.05)")
     parser.add_argument("--fitrange-max", type=float, default=None,
@@ -75,6 +82,9 @@ def main() -> int:
         plotFormat=args.plot_format,
         fitrangeMin=args.fitrange_min,
         fitrangeMax=args.fitrange_max,
+        rateStability=args.rate_stability,
+        rateStabilityThreshold=args.rate_stability_threshold,
+        rateStabilityFloor=args.rate_stability_floor,
     )
 
     dataRoot = Path(args.data_root) if args.data_root else None
