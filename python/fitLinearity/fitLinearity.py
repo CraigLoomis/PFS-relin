@@ -12,6 +12,7 @@ from pathlib import Path
 
 import lsst.obs.pfs.h4Linearity as nirLinearity
 import numpy as np
+from lsst.obs.pfs.h4Linearity.rateStability import detectRateInstability
 from lsst.obs.pfs.h4Linearity.types import (
     BORDER_PIX,
     FIT_FAILED,
@@ -19,6 +20,7 @@ from lsst.obs.pfs.h4Linearity.types import (
     INSUFFICIENT_POINTS,
     MASKED_BY_INPUT,
     NON_MONOTONIC,
+    RATE_UNSTABLE,
     Ramp,
 )
 
@@ -735,6 +737,32 @@ def _loadInputRamp(inputDir: Path, noPhotodiode: bool) -> tuple[Ramp, Path]:
         )
     _t("load + photodiode correction", t0)
     return correctedRamp, dataPath
+
+
+def _foldRateStability(cumulativeLinear, badPixelMask, threshold, rateFloorADU):
+    """Run the split-half rate-stability gate on the linearized ramp and fold it in.
+
+    ``cumulativeLinear`` is the linearized cumulative ramp in ``(N, H, W)``; its
+    per-read deltas are the rate the gate tests for constancy. Only pixels good
+    in ``badPixelMask`` are tested. Returns ``(foldedMask, result)`` where
+    ``foldedMask`` is a copy of ``badPixelMask`` with ``RATE_UNSTABLE`` OR-ed in
+    at rejected pixels. A ramp too short to form two testable halves is reported
+    and skipped, returning ``(badPixelMask.copy(), None)``.
+    """
+    linDeltas = np.moveaxis(np.diff(cumulativeLinear, axis=0), 0, -1)  # (H, W, N-1)
+    good = badPixelMask == 0
+    flagMask = np.zeros(linDeltas.shape, dtype=bool)
+    try:
+        result = detectRateInstability(
+            linDeltas, flagMask, goodPixelMask=good,
+            threshold=threshold, rateFloorADU=rateFloorADU,
+        )
+    except ValueError as exc:
+        print(f"  rate-stability skipped: {exc}", flush=True)
+        return badPixelMask.copy(), None
+    folded = badPixelMask.copy()
+    folded[result.rejectMask] |= RATE_UNSTABLE
+    return folded, result
 
 
 def runFit(config: SanityCheckConfig, inputDir: Path, outDir: Path) -> None:

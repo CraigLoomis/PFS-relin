@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fitLinearity.fitLinearity import SanityCheckConfig, cliTag
+import numpy as np
+from fitLinearity.fitLinearity import SanityCheckConfig, _foldRateStability, cliTag
+from lsst.obs.pfs.h4Linearity.types import RATE_UNSTABLE
 
 
 def _config(**overrides) -> SanityCheckConfig:
@@ -69,3 +71,44 @@ def testRateStabilityNonDefaultFloorTag():
 def testRateStabilityFloorIgnoredWhenDisabled():
     # Floor only appears when the gate is on.
     assert cliTag(_config(rateStability=False, rateStabilityFloor=8.0)) == "o4"
+
+
+def _cumulativeFromDeltas(deltaRows):
+    """Build a (N, H, W) linearized cumulative cube from per-pixel delta lists.
+
+    deltaRows[i] is the length-(N-1) delta sequence for pixel (0, i); read 0 is 0.
+    """
+    deltas = np.array(deltaRows, dtype=np.float32).T          # (N-1, npix)
+    nDeltas, npix = deltas.shape
+    cube = np.zeros((nDeltas + 1, 1, npix), dtype=np.float32)
+    np.cumsum(deltas, axis=0, out=cube[1:, 0, :])
+    return cube
+
+
+def testFoldRateStabilityFlagsOnlyTheUnstablePixel():
+    # 3 pixels, 7 deltas each. Halves split [0:3] / [3:7].
+    #   pixel 0: constant rate 10 -> stable
+    #   pixel 1: 10 in first half, 100 in second -> unstable
+    #   pixel 2: constant, but pre-masked (excluded from the gate)
+    cube = _cumulativeFromDeltas([
+        [10, 10, 10, 10, 10, 10, 10],
+        [10, 10, 10, 100, 100, 100, 100],
+        [10, 10, 10, 10, 10, 10, 10],
+    ])
+    badPixelMask = np.array([[0, 0, 0x0001]], dtype=np.int32)
+    folded, result = _foldRateStability(cube, badPixelMask, threshold=0.20, rateFloorADU=5.0)
+
+    assert folded[0, 0] == 0                       # stable good pixel: untouched
+    assert folded[0, 1] == RATE_UNSTABLE           # unstable good pixel: flagged
+    assert folded[0, 2] == 0x0001                  # pre-masked pixel: preserved, not gated
+    assert result is not None and result.nRejected == 1
+    assert badPixelMask[0, 1] == 0                 # input mask not mutated in place
+
+
+def testFoldRateStabilityShortRampSkips():
+    # 4 deltas < 2*minDeltasPerSegment (6): gate cannot form two halves.
+    cube = _cumulativeFromDeltas([[10, 10, 10, 10]])
+    badPixelMask = np.array([[0]], dtype=np.int32)
+    folded, result = _foldRateStability(cube, badPixelMask, threshold=0.20, rateFloorADU=5.0)
+    assert result is None
+    assert folded[0, 0] == 0                       # nothing flagged
