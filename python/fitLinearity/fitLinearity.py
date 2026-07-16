@@ -42,6 +42,9 @@ class SanityCheckConfig:
     plotFormat: str
     fitrangeMin: float | None
     fitrangeMax: float | None
+    rateStability: bool = False
+    rateStabilityThreshold: float = 0.20
+    rateStabilityFloor: float = 5.0
 
 
 def cliTag(config: SanityCheckConfig) -> str:
@@ -68,6 +71,10 @@ def cliTag(config: SanityCheckConfig) -> str:
             if config.badLinearityMultiplier is not None
             else "_blmOff"
         )
+    if config.rateStability:
+        tag += f"_rs{config.rateStabilityThreshold}"
+        if config.rateStabilityFloor != 5.0:
+            tag += f"_rsf{config.rateStabilityFloor}"
     return tag
 
 

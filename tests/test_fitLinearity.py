@@ -48,3 +48,24 @@ def testEveryFieldTogether():
         badLinearityMultiplier=3.0,
     ))
     assert tag == "o5_pdOff_dev0.45_ds0.3_sat45000_lff0.7_knee0.6_blm3.0"
+
+
+def testRateStabilityOffAddsNoTag():
+    assert cliTag(_config(rateStability=False)) == "o4"
+
+
+def testRateStabilityEnabledDefaultTag():
+    assert cliTag(_config(rateStability=True)) == "o4_rs0.2"
+
+
+def testRateStabilityNonDefaultThresholdTag():
+    assert cliTag(_config(rateStability=True, rateStabilityThreshold=0.3)) == "o4_rs0.3"
+
+
+def testRateStabilityNonDefaultFloorTag():
+    assert cliTag(_config(rateStability=True, rateStabilityFloor=8.0)) == "o4_rs0.2_rsf8.0"
+
+
+def testRateStabilityFloorIgnoredWhenDisabled():
+    # Floor only appears when the gate is on.
+    assert cliTag(_config(rateStability=False, rateStabilityFloor=8.0)) == "o4"
