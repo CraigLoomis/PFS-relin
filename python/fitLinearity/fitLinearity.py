@@ -97,7 +97,7 @@ def _applyBridge(correction, ramp):
     Upstream's ``apply.py`` / ``Ramp.reads`` / ``LinearizedRamp.cumulativeLinear``
     are still documented and implemented as ``(H, W, N)``, but our examples
     (and the new upstream ``fit.py``) use ``(N, H, W)``. Transpose around the
-    apply call so downstream sanity_check code stays in ``(N, H, W)``. Remove
+    apply call so downstream fitLinearity code stays in ``(N, H, W)``. Remove
     this wrapper once the transpose is finished upstream.
     """
     from types import SimpleNamespace

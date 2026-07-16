@@ -2,7 +2,7 @@
 
 Validation harness for `lsst.obs.pfs.h4Linearity` — per-pixel polynomial
 nonlinearity correction for IR-detector up-the-ramp data. The fit and apply
-implementations live upstream; this repo holds the loaders, the sanity check,
+implementations live upstream; this repo holds the loaders, the fit driver,
 and the benchmarks.
 
 ## Install (development)
@@ -36,7 +36,7 @@ pytest
 ## Real-data check
 
 ```bash
-bin/sanityCheck.py --det 18734 --fit --plot
+bin/fitLinearity.py --det 18734 --fit --plot
 ```
 
 Reads `../jhu-data/<det>/*.npz` and writes the corrected FITS file and

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run the linearity sanity check on one detector's lab ramp."""
+"""Fit a per-pixel linearity correction for one detector's lab ramp."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 from fitLinearity import paths  # noqa: E402
-from fitLinearity.sanityCheck import SanityCheckConfig, cliTag, runFit, runPlot  # noqa: E402
+from fitLinearity.fitLinearity import SanityCheckConfig, cliTag, runFit, runPlot  # noqa: E402
 
 
 def main() -> int:

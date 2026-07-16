@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fitLinearity.sanityCheck import SanityCheckConfig, cliTag
+from fitLinearity.fitLinearity import SanityCheckConfig, cliTag
 
 
 def _config(**overrides) -> SanityCheckConfig:
