@@ -744,21 +744,25 @@ def _foldRateStability(cumulativeLinear, rawCumulative, fitMin, fitMax, badPixel
     """Run the split-half rate-stability gate on the linearized ramp and fold it in.
 
     ``cumulativeLinear`` is the linearized cumulative ramp in ``(N, H, W)``; its
-    per-read deltas are the rate the gate tests for constancy. Reads whose raw
-    signal ``rawCumulative`` lies outside the per-pixel fit range
-    ``[fitMin, fitMax]`` are excluded from the test, so the gate sees only the
-    clean-linear part of the ramp and not the near-saturation extrapolation.
-    Only pixels good in ``badPixelMask`` are tested. Returns
-    ``(foldedMask, result)`` where ``foldedMask`` is a copy of ``badPixelMask``
-    with ``RATE_UNSTABLE`` OR-ed in at rejected pixels. A ramp too short to form
-    two testable halves is reported and skipped, returning
-    ``(badPixelMask.copy(), None)``.
+    per-read deltas are the rate the gate tests for constancy. The test is
+    restricted to each pixel's valid prefix: reads up to the first one whose raw
+    signal ``rawCumulative`` crosses above ``fitMax``. Everything from that first
+    crossing onward is masked, so the near-saturation rollover -- where the raw
+    signal can fall back below ``fitMax`` -- never re-enters the test. Only
+    pixels good in ``badPixelMask`` are tested. Returns ``(foldedMask, result)``
+    where ``foldedMask`` is a copy of ``badPixelMask`` with ``RATE_UNSTABLE``
+    OR-ed in at rejected pixels. A ramp too short to form two testable halves is
+    reported and skipped, returning ``(badPixelMask.copy(), None)``.
     """
     linDeltas = np.moveaxis(np.diff(cumulativeLinear, axis=0), 0, -1)  # (H, W, N-1)
     good = badPixelMask == 0
-    # A delta is testable only when both of its bracketing reads are in range.
-    inRange = (rawCumulative >= fitMin) & (rawCumulative <= fitMax)    # (N, H, W)
-    flagMask = np.moveaxis(~(inRange[:-1] & inRange[1:]), 0, -1)       # (H, W, N-1)
+    # A read is valid only while the ramp is at/above fitMin and has not yet
+    # crossed above fitMax; once it saturates, all later reads are masked even
+    # if the rolled-over signal dips back into [fitMin, fitMax].
+    saturated = np.maximum.accumulate(rawCumulative > fitMax, axis=0)  # (N, H, W)
+    valid = (rawCumulative >= fitMin) & ~saturated                     # (N, H, W)
+    # A delta is testable only when both of its bracketing reads are valid.
+    flagMask = np.moveaxis(~(valid[:-1] & valid[1:]), 0, -1)           # (H, W, N-1)
     try:
         result = detectRateInstability(
             linDeltas, flagMask, goodPixelMask=good,

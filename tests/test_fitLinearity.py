@@ -149,3 +149,30 @@ def testFoldRateStabilityClipsAboveFitMax():
     foldedOpen, _ = _foldRateStability(linCube, rawCube, fitMin, fitMaxOpen, badPixelMask,
                                        threshold=0.20, rateFloorADU=5.0)
     assert foldedOpen[0, 0] == RATE_UNSTABLE
+
+
+def testFoldRateStabilityMasksAfterFirstFitMaxCrossing():
+    # Saturation rollover: the raw ramp climbs past fitMax at read 11, then falls
+    # back below fitMax (110 -> 60 -> 50). The linearized rate crashes on those
+    # post-crossing reads. Because they come after the ramp first hit fitMax they
+    # must stay masked even though their raw value dipped back into range.
+    linCube = _cumulativeFromDeltas([[10] * 11 + [-40, -40]])   # N = 14, crash at the tail
+    rawFall = _cumulativeFromDeltas([[10] * 11 + [-50, -10]])   # raw: ...110, 60, 50
+    fitMin = np.full((1, 1), -1e30, dtype=np.float32)
+    badPixelMask = np.array([[0]], dtype=np.int32)
+
+    # fitMax=105: first crossing at read 11; reads 12-13 fall back to 60/50 but
+    # stay masked, so the crash never enters the test -> not flagged.
+    fitMaxSat = np.full((1, 1), 105.0, dtype=np.float32)
+    folded, result = _foldRateStability(linCube, rawFall, fitMin, fitMaxSat, badPixelMask,
+                                        threshold=0.20, rateFloorADU=5.0)
+    assert folded[0, 0] == 0
+    assert result is not None and result.nRejected == 0
+
+    # Control: with fitMax high enough that the ramp never crosses, the same
+    # crash is genuinely in range, tested, and rejected -- so it is the
+    # first-crossing mask, not the data, that spares the rollover pixel.
+    fitMaxOpen = np.full((1, 1), 1e30, dtype=np.float32)
+    foldedOpen, _ = _foldRateStability(linCube, rawFall, fitMin, fitMaxOpen, badPixelMask,
+                                       threshold=0.20, rateFloorADU=5.0)
+    assert foldedOpen[0, 0] == RATE_UNSTABLE
