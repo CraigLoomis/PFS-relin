@@ -4,8 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# Cap BLAS/LAPACK to one thread per process. The fit parallelizes over tiles, so
+# an uncapped BLAS thread pool oversubscribes (tile workers x BLAS threads);
+# single-threaded BLAS is fastest at every core budget on a many-core host. Must
+# run before numpy is imported (via the fitLinearity imports below); setdefault
+# lets an explicit environment value win.
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
