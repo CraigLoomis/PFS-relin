@@ -26,6 +26,18 @@ Use the LSST-env `python` directly. **Do not use `uv run`** — it builds an
 isolated venv from `pyproject.toml` alone and cannot see the LSST conda
 site-packages. Never put a local checkout on `PYTHONPATH`; go through EUPS.
 
+## Threading
+
+`fit()` parallelizes over image tiles (auto `workers = min(cpu_count, 8)`) while
+numpy's BLAS spawns its own threads, so the two multiply. On a many-core host an
+uncapped BLAS pool oversubscribes badly. `bin/fitLinearity.py` therefore caps
+BLAS/OpenMP to one thread per process (`OPENBLAS_NUM_THREADS=1`, `OMP_NUM_THREADS=1`,
+`MKL_NUM_THREADS=1`, `NUMEXPR_NUM_THREADS=1`), set before numpy is imported and via
+`setdefault` so an explicit environment value still wins. Single-threaded BLAS is
+fastest at every core budget; the fit is memory-bandwidth bound, so tile-worker
+speedup flattens past ~8–16 workers. The `bin/benchmark*.py` scripts control
+threads themselves and are not subject to the cap.
+
 ## Data and outputs
 
 - Inputs: `../jhu-data/<det>/*.npz`, addressed by `--det` (override the root with
@@ -41,6 +53,25 @@ bin/fitLinearity.py --det 18734 --fit --plot
 
 Runs the full fit → save → load → apply chain on a 4096² lab ramp. Use it after
 changes that touch fit/apply/io upstream.
+
+## Rate-stability gate
+
+`--rate-stability` runs the upstream split-half `detectRateInstability` gate on
+the linearized ramp after the fit and folds `RATE_UNSTABLE` into the saved
+correction's bad-pixel mask (re-saving the FITS). It tests each good pixel's
+per-read rate for half-vs-half consistency over the valid prefix of the ramp:
+reads up to the first one whose raw signal crosses above `fitMax`. Everything
+from that first crossing on is masked, so the near-saturation extrapolation —
+and the rollover where a saturating pixel's raw signal dips back below `fitMax` —
+never enters the test. Knobs: `--rate-stability-threshold` (default 0.20) and
+`--rate-stability-floor` (default 5.0 DN); the cliTag gains `_rs<threshold>`, plus
+`_rsf<floor>` when the floor is non-default.
+
+The gate needs a clean-linear fit. An order-4 correction under-corrects the
+near-saturation knee, leaving in-range droop that makes the gate reject most good
+pixels; order 5 removes it. A single anomalous low read just below `fitMax` (a
+dropout the production CR/glitch mask would catch) can still trip the gate — this
+harness passes an all-zeros CR flagMask, so only the fitMax clip is applied.
 
 ## Docs layout
 
